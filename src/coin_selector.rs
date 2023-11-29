@@ -35,8 +35,7 @@ impl Default for Target {
     fn default() -> Self {
         Self {
             feerate: FeeRate::default_min_relay_fee(),
-            // https://bitcoin.stackexchange.com/questions/69282/what-is-the-min-relay-min-fee-code-26
-            min_fee: 1000,
+            min_fee: 0,
             value: 0,
         }
     }
