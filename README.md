@@ -11,12 +11,11 @@ and mandatory inputs (if any).
 
 ```rust
 use std::str::FromStr;
-use bdk_coin_select::{ CoinSelector, Candidate, TXIN_BASE_WEIGHT };
+use bdk_coin_select::{ CoinSelector, Candidate, TR_KEYSPEND_SATISFACTION_WEIGHT, TXIN_BASE_WEIGHT };
 use bitcoin::{ Address, Network, Transaction, TxIn, TxOut };
 
 // You should use miniscript to figure out the satisfaction weight for your coins!
-const TR_SATISFACTION_WEIGHT: u32 = 66;
-const TR_INPUT_WEIGHT: u32 = TXIN_BASE_WEIGHT + TR_SATISFACTION_WEIGHT;
+const TR_INPUT_WEIGHT: u32 = TXIN_BASE_WEIGHT + TR_KEYSPEND_SATISFACTION_WEIGHT;
 
 // The address where we want to send our coins.
 let recipient_addr = 
@@ -27,12 +26,12 @@ let recipient_addr =
 
 let candidates = vec![
     Candidate {
-        // How many inputs does this candidate represent. Needed so we can 
-        // figure out the weight of the varint that encodes the number of inputs.
+        // How many inputs does this candidate represents. Needed so we can 
+        // figure out the weight of the varint that encodes the number of inputs
         input_count: 1,
         // the value of the input
         value: 1_000_000,
-        // the total weight of the input(s). This doesn't include
+        // the total weight of the input(s).
         weight: TR_INPUT_WEIGHT,
         // wether it's a segwit input. Needed so we know whether to include the
         // segwit header in total weight calculations.
@@ -163,8 +162,9 @@ let change_policy = min_value_and_waste(
     long_term_feerate,
 );
 
-// This metric minimizes transaction fee. The `long_term_feerate` is used to
-// calculate the additional fee from spending the change output in the future.
+// This metric minimizes transaction fees paid over time. The 
+// `long_term_feerate` is used to calculate the additional fee from spending 
+// the change output in the future.
 let metric = LowestFee {
     target,
     long_term_feerate,
@@ -188,3 +188,75 @@ match coin_selector.run_bnb(metric, 100_000) {
 };
 ```
 
+## Finalizing a Selection
+
+- [`is_target_met`] checks whether the current state of [`CoinSelector`] meets the [`Target`].
+- [`apply_selection`] applies the selection to the original list of candidate `TxOut`s.
+
+[`is_target_met`]: crate::CoinSelector::is_target_met
+[`apply_selection`]: crate::CoinSelector::apply_selection
+[`CoinSelector`]: crate::CoinSelector
+[`Target`]: crate::Target
+
+```rust
+use bdk_coin_select::{ CoinSelector, Candidate, DrainWeights, Target };
+use bdk_coin_select::change_policy::min_value;
+use bitcoin::{ Amount, ScriptBuf, TxOut };
+# let base_weight = 0_u32;
+# let drain_weights = DrainWeights::new_tr_keyspend();
+
+// A random target, as an example.
+let target = Target {
+    value: 21_000,
+    ..Default::default()
+};
+// A random drain policy, as an example.
+let drain_policy = min_value(drain_weights, 0);
+
+// This is a list of candidate txouts for coin selection. If a txout is picked,
+// our transaction's input will spend it.
+let candidate_txouts = vec![
+    TxOut {
+        value: 100_000,
+        script_pubkey: ScriptBuf::new(),
+    }
+];
+// We transform the candidate txouts into something `CoinSelector` can 
+// understand.
+let candidates = candidate_txouts
+    .iter()
+    .map(|txout| Candidate {
+        input_count: 1,
+        value: txout.value,
+        weight: txout.weight() as u32,
+        is_segwit: txout.script_pubkey.is_witness_program(),
+    })
+    .collect::<Vec<_>>();
+
+let mut selector = CoinSelector::new(&candidates, base_weight);
+let _result = selector
+    .select_until_target_met(target, drain_policy(&selector, target));
+
+// Determine what the drain output will be, based on our selection.
+let drain = drain_policy(&selector, target);
+
+// Check that selection is finished!
+assert!(selector.is_target_met(target, drain));
+
+// Get a list of coins that are selected.
+let selected_coins = selector
+    .apply_selection(&candidate_txouts)
+    .collect::<Vec<_>>();
+assert_eq!(selected_coins.len(), 1);
+```
+
+# Minimum Supported Rust Version (MSRV)
+
+This library should compile with Rust 1.54.0.
+
+To build with the MSRV, you will need to pin the following dependencies:
+
+```shell
+# tempfile 3.7.0 has MSRV 1.63.0+
+cargo update -p tempfile --precise "3.6.0"
+```
