@@ -1,8 +1,8 @@
 [package]
 name = "bdk_coin_select"
 version = "0.1.0"
-edition = "2021"
-rust-version = "1.57"
+edition = "2018"
+#rust-version = "1.54"
 homepage = "https://bitcoindevkit.org"
 repository = "https://github.com/bitcoindevkit/coin-select"
 documentation = "https://docs.rs/bdk_coin_select"
