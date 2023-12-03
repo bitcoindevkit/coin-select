@@ -98,31 +98,31 @@ impl<'a, M: BnbMetric> BnbIter<'a, M> {
                     selector: cs.clone(),
                     is_exclusion,
                 };
-                println!(
+                /*println!(
                     "\t\t(PUSH) branch={} inclusion={} lb={:?} score={:?}",
                     branch.selector,
                     !branch.is_exclusion,
                     branch.lower_bound,
                     self.metric.score(&branch.selector),
-                );
+                );*/
                 self.queue.push(branch);
-            } else {
-                println!(
-                    "\t\t( REJ) branch={} inclusion={} lb={:?} score={:?}",
-                    cs,
-                    !is_exclusion,
-                    bound,
-                    self.metric.score(cs),
-                );
-            }
-        } else {
-            println!(
-                "\t\t(NO B) branch={} inclusion={} score={:?}",
-                cs,
-                !is_exclusion,
-                self.metric.score(cs),
-            );
-        }
+            } /* else {
+                  println!(
+                      "\t\t( REJ) branch={} inclusion={} lb={:?} score={:?}",
+                      cs,
+                      !is_exclusion,
+                      bound,
+                      self.metric.score(cs),
+                  );
+              }*/
+        } /*else {
+              println!(
+                  "\t\t(NO B) branch={} inclusion={} score={:?}",
+                  cs,
+                  !is_exclusion,
+                  self.metric.score(cs),
+              );
+          }*/
     }
 
     fn insert_new_branches(&mut self, cs: &CoinSelector<'a>) {
@@ -143,15 +143,15 @@ impl<'a, M: BnbMetric> BnbIter<'a, M> {
             if (next.value, next.weight) != to_ban {
                 break;
             }
-            let (index, candidate) = exclusion_cs
+            let (_index, _candidate) = exclusion_cs
                 .candidates()
                 .find(|(i, _)| *i == next_index)
                 .expect("must have index since we are planning to ban it");
             if is_first_ban {
                 is_first_ban = false;
-            } else {
-                println!("banning: [{}] {:?}", index, candidate);
-            }
+            } /*else {
+                  println!("banning: [{}] {:?}", _index, _candidate);
+              }*/
             exclusion_cs.ban(next_index);
         }
         self.consider_adding_to_queue(&exclusion_cs, true);
