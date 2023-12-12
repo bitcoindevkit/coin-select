@@ -35,12 +35,12 @@ where
     fn calc_metric(&self, cs: &CoinSelector<'_>, drain_weights: Option<DrainWeights>) -> f32 {
         self.calc_metric_lb(cs, drain_weights)
             + match drain_weights {
-                Some(_) => {
+                Some(_) => 0.0,
+                None => {
                     let selected_value = cs.selected_value();
                     assert!(selected_value >= self.target.value);
                     (cs.selected_value() - self.target.value) as f32
                 }
-                None => 0.0,
             }
     }
 

@@ -156,6 +156,6 @@ fn combined_changeless_metric() {
         common::bnb_search(&mut cs_b, metric_combined, usize::MAX).expect("must find solution");
     println!("score={:?} rounds={}", combined_score, combined_rounds);
 
-    // [todo] shouldn't rounds be less since we are only considering changeless branches?
-    assert!(combined_rounds <= rounds);
+    // rounds is less since combined only considers changeless branches
+    assert!(rounds <= combined_rounds);
 }
