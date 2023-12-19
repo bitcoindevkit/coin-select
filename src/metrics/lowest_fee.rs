@@ -6,11 +6,15 @@ use crate::{
 /// Metric that aims to minimize transaction fees. The future fee for spending the change output is
 /// included in this calculation.
 ///
-/// The scoring function for changeless solutions is:
-/// > input_weight * feerate + excess
+/// The fee is simply:
 ///
-/// The scoring function for solutions with change:
-/// > (input_weight + change_output_weight) * feerate + change_spend_weight * long_term_feerate
+/// > `inputs - outputs` where `outputs = target.value + change_value`
+///
+/// But the total value includes the cost of spending the change output if it exists:
+///
+/// > `change_spend_weight * long_term_feerate`
+///
+/// The `change_spend_weight` and `change_value` are determined by the `change_policy`
 #[derive(Clone, Copy)]
 pub struct LowestFee {
     /// The target parameters for the resultant selection.
@@ -55,13 +59,19 @@ impl BnbMetric for LowestFee {
             return None;
         }
 
-        let drain_weights = if drain.is_some() {
-            Some(drain.weights)
-        } else {
-            None
+        let long_term_fee = {
+            let fee_for_the_tx = cs.fee(self.target.value, drain.value);
+            assert!(
+                fee_for_the_tx > 0,
+                "must not be called unless selection has met target"
+            );
+            // Why `spend_fee` rounds up here. We could use floats but I felt it was just better to
+            // accept the extra 1 sat penality to having a change output
+            let fee_for_spending_drain = drain.weights.spend_fee(self.long_term_feerate);
+            fee_for_the_tx as u64 + fee_for_spending_drain
         };
 
-        Some(Ordf32(self.calc_metric(cs, drain_weights)))
+        Some(Ordf32(long_term_fee as f32))
     }
 
     fn bound(&mut self, cs: &CoinSelector<'_>) -> Option<Ordf32> {

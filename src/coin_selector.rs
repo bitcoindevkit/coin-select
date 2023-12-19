@@ -264,6 +264,14 @@ impl<'a> CoinSelector<'a> {
         (self.weight(drain_weight) as f32 * feerate.spwu()).ceil() as u64
     }
 
+    /// The actual fee the selection would pay if it was used in a transaction that had
+    /// `target_value` value for outputs and change output of `drain_value`.
+    ///
+    /// This can be negative when the selection is invalid (outputs are greater than inputs).
+    pub fn fee(&self, target_value: u64, drain_value: u64) -> i64 {
+        self.selected_value() as i64 - target_value as i64 - drain_value as i64
+    }
+
     /// The value of the current selected inputs minus the fee needed to pay for the selected inputs
     pub fn effective_value(&self, feerate: FeeRate) -> i64 {
         self.selected_value() as i64 - (self.input_weight() as f32 * feerate.spwu()).ceil() as i64
@@ -654,6 +662,11 @@ impl DrainWeights {
     pub fn waste(&self, feerate: FeeRate, long_term_feerate: FeeRate) -> f32 {
         self.output_weight as f32 * feerate.spwu()
             + self.spend_weight as f32 * long_term_feerate.spwu()
+    }
+
+    /// The the fee you will pay to spend this otuput in the future.
+    pub fn spend_fee(&self, long_term_feerate: FeeRate) -> u64 {
+        (self.spend_weight as f32 * long_term_feerate.spwu()).ceil() as u64
     }
 
     /// Create [`DrainWeights`] that represents a drain output with a taproot keyspend.
