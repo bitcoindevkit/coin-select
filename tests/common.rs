@@ -207,9 +207,9 @@ impl StrategyParams {
 pub fn gen_candidates(n: usize) -> Vec<Candidate> {
     let mut rng = TestRng::deterministic_rng(RngAlgorithm::ChaCha);
     core::iter::repeat_with(move || {
-        let value = rng.gen_range(1, 500_001);
-        let weight = rng.gen_range(1, 2001);
-        let input_count = rng.gen_range(1, 3);
+        let value = rng.gen_range(1..500_001);
+        let weight = rng.gen_range(1..2001);
+        let input_count = rng.gen_range(1..3);
         let is_segwit = rng.gen_bool(0.01);
 
         Candidate {

@@ -625,9 +625,9 @@ impl Candidate {
     }
 }
 
-/// A structure that represents the weight costs of a drain (a.k.a. change) output.
+/// Represents the weight costs of a drain (a.k.a. change) output.
 ///
-/// This structure can also represent multiple outputs.
+/// May also represent multiple outputs.
 #[derive(Default, Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct DrainWeights {
     /// The weight of including this drain output.
@@ -659,9 +659,8 @@ impl DrainWeights {
 /// A drain (A.K.A. change) output.
 /// Technically it could represent multiple outputs.
 ///
-/// These are usually created by a [`change_policy`].
-///
-/// [`change_policy`]: crate::change_policy
+/// This is returned from [`CoinSelector::drain`]. Note if `drain` returns a drain where `is_none()`
+/// returns true then **no change should be added** to the transaction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub struct Drain {
     /// Weight of adding drain output and spending the drain output.

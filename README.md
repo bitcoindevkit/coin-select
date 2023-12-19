@@ -3,6 +3,9 @@
 `bdk_coin_select` is a tool to help you select inputs for making Bitcoin (ticker: BTC) transactions.
 It's got zero dependencies so you can paste it into your project without concern.
 
+> ⚠ This work is only ready to use by those who expect (potentially catastrophic) bugs and will have
+> the time to investigate them and contribute back to this crate.
+
 ## Constructing the `CoinSelector`
 
 The main structure is [`CoinSelector`](crate::CoinSelector). To construct it, we specify a list of
