@@ -2,9 +2,8 @@
 
 mod common;
 
-use bdk_coin_select::change_policy::min_value_and_waste;
 use bdk_coin_select::{
-    change_policy, float::Ordf32, metrics::Waste, Candidate, CoinSelector, Drain, DrainWeights,
+    float::Ordf32, metrics::Waste, Candidate, ChangePolicy, CoinSelector, Drain, DrainWeights,
     FeeRate, Target,
 };
 use proptest::{
@@ -32,7 +31,8 @@ fn waste_all_selected_except_one_is_optimal_and_awkward() {
         spend_weight: change_spend_weight,
     };
 
-    let change_policy = change_policy::min_waste(drain_weights, long_term_feerate);
+    let change_policy =
+        ChangePolicy::min_value_and_waste(drain_weights, 0, feerate, long_term_feerate);
     let wv = test_wv(&mut rng);
     let candidates = wv.take(num_inputs).collect::<Vec<_>>();
 
@@ -46,7 +46,7 @@ fn waste_all_selected_except_one_is_optimal_and_awkward() {
     let solutions = cs.bnb_solutions(Waste {
         target,
         long_term_feerate,
-        change_policy: &change_policy,
+        change_policy,
     });
 
     let (_i, (best, score)) = solutions
@@ -60,7 +60,7 @@ fn waste_all_selected_except_one_is_optimal_and_awkward() {
     let target_waste = all_selected.waste(
         target,
         long_term_feerate,
-        change_policy(&all_selected, target),
+        cs.drain(target, change_policy),
         1.0,
     );
     assert!(score.0 < target_waste);
@@ -90,7 +90,8 @@ fn waste_naive_effective_value_shouldnt_be_better() {
         value: 0,
     };
 
-    let change_policy = change_policy::min_waste(drain_weights, long_term_feerate);
+    let change_policy =
+        ChangePolicy::min_value_and_waste(drain_weights, 0, feerate, long_term_feerate);
     let wv = test_wv(&mut rng);
     let candidates = wv.take(num_inputs).collect::<Vec<_>>();
 
@@ -105,7 +106,7 @@ fn waste_naive_effective_value_shouldnt_be_better() {
     let solutions = cs.bnb_solutions(Waste {
         target,
         long_term_feerate,
-        change_policy: &change_policy,
+        change_policy,
     });
 
     let (_i, (_best, score)) = solutions
@@ -122,7 +123,7 @@ fn waste_naive_effective_value_shouldnt_be_better() {
     let bench_waste = naive_select.waste(
         target,
         long_term_feerate,
-        change_policy(&naive_select, target),
+        naive_select.drain(target, change_policy),
         1.0,
     );
 
@@ -150,7 +151,8 @@ fn waste_doesnt_take_too_long_to_finish() {
         spend_weight: change_spend_weight,
     };
 
-    let change_policy = change_policy::min_waste(drain_weights, long_term_feerate);
+    let change_policy =
+        ChangePolicy::min_value_and_waste(drain_weights, 0, feerate, long_term_feerate);
     let wv = test_wv(&mut rng);
     let candidates = wv.take(num_inputs).collect::<Vec<_>>();
 
@@ -165,7 +167,7 @@ fn waste_doesnt_take_too_long_to_finish() {
     let solutions = cs.bnb_solutions(Waste {
         target,
         long_term_feerate,
-        change_policy: &change_policy,
+        change_policy,
     });
 
     solutions
@@ -202,7 +204,8 @@ fn waste_lower_long_term_feerate_but_still_need_to_select_all() {
         spend_weight: change_spend_weight,
     };
 
-    let change_policy = change_policy::min_waste(drain_weights, long_term_feerate);
+    let change_policy =
+        ChangePolicy::min_value_and_waste(drain_weights, 0, feerate, long_term_feerate);
     let wv = test_wv(&mut rng);
     let candidates = wv.take(num_inputs).collect::<Vec<_>>();
 
@@ -217,7 +220,7 @@ fn waste_lower_long_term_feerate_but_still_need_to_select_all() {
     let solutions = cs.bnb_solutions(Waste {
         target,
         long_term_feerate,
-        change_policy: &change_policy,
+        change_policy,
     });
     let bench = {
         let mut all_selected = cs.clone();
@@ -234,7 +237,7 @@ fn waste_lower_long_term_feerate_but_still_need_to_select_all() {
     let bench_waste = bench.waste(
         target,
         long_term_feerate,
-        change_policy(&bench, target),
+        bench.drain(target, change_policy),
         1.0,
     );
 
@@ -260,7 +263,8 @@ fn waste_low_but_non_negative_rate_diff_means_adding_more_inputs_might_reduce_ex
         spend_weight: change_spend_weight,
     };
 
-    let change_policy = change_policy::min_waste(drain_weights, long_term_feerate);
+    let change_policy =
+        ChangePolicy::min_value_and_waste(drain_weights, 0, feerate, long_term_feerate);
     let wv = test_wv(&mut rng);
     let mut candidates = wv.take(num_inputs).collect::<Vec<_>>();
     // HACK: for this test had to set segwit true to keep it working once we
@@ -280,7 +284,7 @@ fn waste_low_but_non_negative_rate_diff_means_adding_more_inputs_might_reduce_ex
     let solutions = cs.bnb_solutions(Waste {
         target,
         long_term_feerate,
-        change_policy: &change_policy,
+        change_policy,
     });
     let bench = {
         let mut all_selected = cs.clone();
@@ -297,7 +301,7 @@ fn waste_low_but_non_negative_rate_diff_means_adding_more_inputs_might_reduce_ex
     let bench_waste = bench.waste(
         target,
         long_term_feerate,
-        change_policy(&bench, target),
+        bench.drain(target, change_policy),
         1.0,
     );
 

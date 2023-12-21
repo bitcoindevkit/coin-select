@@ -1,6 +1,6 @@
 use crate::{
-    float::Ordf32, metrics::change_lower_bound, BnbMetric, Candidate, CoinSelector, Drain,
-    DrainWeights, FeeRate, Target,
+    change_policy::ChangePolicy, float::Ordf32, metrics::change_lower_bound, BnbMetric, Candidate,
+    CoinSelector, Drain, DrainWeights, FeeRate, Target,
 };
 
 /// Metric that aims to minimize transaction fees. The future fee for spending the change output is
@@ -11,27 +11,17 @@ use crate::{
 ///
 /// The scoring function for solutions with change:
 /// > (input_weight + change_output_weight) * feerate + change_spend_weight * long_term_feerate
-pub struct LowestFee<'c, C> {
+#[derive(Clone, Copy)]
+pub struct LowestFee {
     /// The target parameters for the resultant selection.
     pub target: Target,
     /// The estimated feerate needed to spend our change output later.
     pub long_term_feerate: FeeRate,
     /// Policy to determine the change output (if any) of a given selection.
-    pub change_policy: &'c C,
+    pub change_policy: ChangePolicy,
 }
 
-impl<'c, C> Clone for LowestFee<'c, C> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<'c, C> Copy for LowestFee<'c, C> {}
-
-impl<'c, C> LowestFee<'c, C>
-where
-    for<'a, 'b> C: Fn(&'b CoinSelector<'a>, Target) -> Drain,
-{
+impl LowestFee {
     fn calc_metric(&self, cs: &CoinSelector<'_>, drain_weights: Option<DrainWeights>) -> f32 {
         self.calc_metric_lb(cs, drain_weights)
             + match drain_weights {
@@ -58,12 +48,9 @@ where
     }
 }
 
-impl<'c, C> BnbMetric for LowestFee<'c, C>
-where
-    for<'a, 'b> C: Fn(&'b CoinSelector<'a>, Target) -> Drain,
-{
+impl BnbMetric for LowestFee {
     fn score(&mut self, cs: &CoinSelector<'_>) -> Option<Ordf32> {
-        let drain = (self.change_policy)(cs, self.target);
+        let drain = cs.drain(self.target, self.change_policy);
         if !cs.is_target_met(self.target, drain) {
             return None;
         }
@@ -81,7 +68,7 @@ where
         // this either returns:
         // * None: change output may or may not exist
         // * Some: change output must exist from this branch onwards
-        let change_lb = change_lower_bound(cs, self.target, &self.change_policy);
+        let change_lb = change_lower_bound(cs, self.target, self.change_policy);
         let change_lb_weights = if change_lb.is_some() {
             Some(change_lb.weights)
         } else {
