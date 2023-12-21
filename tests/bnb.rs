@@ -154,7 +154,7 @@ proptest! {
 
         match solutions.enumerate().filter_map(|(i, sol)| Some((i, sol?))).last() {
             Some((_i, (sol, _score))) => assert!(sol.selected_value() >= target.value),
-            _ => prop_assert!(!cs.is_selection_possible(target, Drain::none())),
+            _ => prop_assert!(!cs.is_selection_possible(target)),
         }
     }
 

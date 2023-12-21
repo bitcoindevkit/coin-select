@@ -51,7 +51,7 @@ impl LowestFee {
 impl BnbMetric for LowestFee {
     fn score(&mut self, cs: &CoinSelector<'_>) -> Option<Ordf32> {
         let drain = cs.drain(self.target, self.change_policy);
-        if !cs.is_target_met(self.target, drain) {
+        if !cs.is_target_met_with_drain(self.target, drain) {
             return None;
         }
 
@@ -76,7 +76,7 @@ impl BnbMetric for LowestFee {
         };
         // println!("\tchange lb: {:?}", change_lb_weights);
 
-        if cs.is_target_met(self.target, change_lb) {
+        if cs.is_target_met_with_drain(self.target, change_lb) {
             // Target is met, is it possible to add further inputs to remove drain output?
             // If we do, can we get a better score?
 
@@ -92,7 +92,7 @@ impl BnbMetric for LowestFee {
                     .rev()
                     .take_while(|(cs, _, candidate)| {
                         candidate.effective_value(self.target.feerate).0 < 0.0
-                            && cs.is_target_met(self.target, Drain::none())
+                            && cs.is_target_met_with_drain(self.target, Drain::none())
                     })
                     .last()
                     .map(|(cs, _, _)| cs);
@@ -133,7 +133,7 @@ impl BnbMetric for LowestFee {
         let (mut cs, slurp_index, candidate_to_slurp) = cs
             .clone()
             .select_iter()
-            .find(|(cs, _, _)| cs.is_target_met(self.target, change_lb))?;
+            .find(|(cs, _, _)| cs.is_target_met_with_drain(self.target, change_lb))?;
         cs.deselect(slurp_index);
 
         let mut lower_bound = self.calc_metric_lb(&cs, change_lb_weights);

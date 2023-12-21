@@ -1,7 +1,5 @@
 use super::change_lower_bound;
-use crate::{
-    bnb::BnbMetric, change_policy::ChangePolicy, float::Ordf32, CoinSelector, Drain, Target,
-};
+use crate::{bnb::BnbMetric, change_policy::ChangePolicy, float::Ordf32, CoinSelector, Target};
 
 /// Metric for finding changeless solutions only.
 pub struct Changeless {
@@ -13,7 +11,7 @@ pub struct Changeless {
 
 impl BnbMetric for Changeless {
     fn score(&mut self, cs: &CoinSelector<'_>) -> Option<Ordf32> {
-        if cs.is_target_met(self.target, Drain::none())
+        if cs.is_target_met(self.target)
             && cs.drain_value(self.target, self.change_policy).is_none()
         {
             Some(Ordf32(0.0))

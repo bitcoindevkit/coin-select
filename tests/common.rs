@@ -154,7 +154,7 @@ where
                         cs,
                         cs.drain_value(target, change_policy).is_some(),
                         lb_score,
-                        cs.is_target_met(target, Drain::none()),
+                        cs.is_target_met(target),
                         descendant_cs,
                         descendant_cs.drain_value(target, change_policy).is_some(),
                         descendant_score,
