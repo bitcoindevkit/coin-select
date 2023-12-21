@@ -1,7 +1,7 @@
 use super::*;
 #[allow(unused)] // some bug in <= 1.48.0 sees this as unused when it isn't
 use crate::float::FloatExt;
-use crate::{bnb::BnbMetric, float::Ordf32, FeeRate};
+use crate::{bnb::BnbMetric, change_policy::ChangePolicy, float::Ordf32, FeeRate};
 use alloc::{borrow::Cow, collections::BTreeSet, vec::Vec};
 
 /// [`CoinSelector`] selects/deselects coins from a set of canididate coins.
@@ -410,12 +410,56 @@ impl<'a> CoinSelector<'a> {
         self.excess(target, drain) >= 0
     }
 
+    /// Whether the constrains of `Target` have been met if we include the drain (change) output
+    /// when `change_policy` decides it should be present.
+    pub fn is_target_met_with_change_policy(
+        &self,
+        target: Target,
+        change_policy: ChangePolicy,
+    ) -> bool {
+        self.is_target_met(target, self.drain(target, change_policy))
+    }
+
     /// Select all unselected candidates
     pub fn select_all(&mut self) {
         loop {
             if !self.select_next() {
                 break;
             }
+        }
+    }
+
+    /// The value of the change output should have to drain the excess value while maintaining the
+    /// constraints of `target` and respecting `change_policy`.
+    ///
+    /// If not change output should be added according to policy then it will return `None`.
+    pub fn drain_value(&self, target: Target, change_policy: ChangePolicy) -> Option<u64> {
+        let excess = self.excess(
+            target,
+            Drain {
+                weights: change_policy.drain_weights,
+                value: 0,
+            },
+        );
+        if excess > change_policy.min_value as i64 {
+            Some(excess as u64)
+        } else {
+            None
+        }
+    }
+
+    /// Convienince method that calls [`drain_value`] and converts the result into `Drain` by using
+    /// the provided `DrainWeights`. Note carefully that the `change_policy` should have been
+    /// calculated with the same `DrainWeights`.
+    ///
+    /// [`drain_value`]: Self::drain_value
+    pub fn drain(&self, target: Target, change_policy: ChangePolicy) -> Drain {
+        match self.drain_value(target, change_policy) {
+            Some(value) => Drain {
+                weights: change_policy.drain_weights,
+                value,
+            },
+            None => Drain::none(),
         }
     }
 
@@ -581,9 +625,9 @@ impl Candidate {
     }
 }
 
-/// A structure that represents the weight costs of a drain (a.k.a. change) output.
+/// Represents the weight costs of a drain (a.k.a. change) output.
 ///
-/// This structure can also represent multiple outputs.
+/// May also represent multiple outputs.
 #[derive(Default, Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct DrainWeights {
     /// The weight of including this drain output.
@@ -615,9 +659,8 @@ impl DrainWeights {
 /// A drain (A.K.A. change) output.
 /// Technically it could represent multiple outputs.
 ///
-/// These are usually created by a [`change_policy`].
-///
-/// [`change_policy`]: crate::change_policy
+/// This is returned from [`CoinSelector::drain`]. Note if `drain` returns a drain where `is_none()`
+/// returns true then **no change should be added** to the transaction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub struct Drain {
     /// Weight of adding drain output and spending the drain output.

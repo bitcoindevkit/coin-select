@@ -15,11 +15,12 @@ readme = "README.md"
 [dependencies]
 # No dependencies! Please do not add any please!
 
-[dev-dependencies]
-rand = "0.7"
-proptest = "0.10"
-bitcoin = "0.30"
 
 [features]
 default = ["std"]
 std = []
+
+[dev-dependencies]
+rand = "0.8"
+proptest = "1.4"
+bitcoin = "0.30"

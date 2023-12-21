@@ -1,18 +1,19 @@
 #![allow(unused)]
 mod common;
 use bdk_coin_select::{
-    float::Ordf32, metrics, Candidate, CoinSelector, Drain, DrainWeights, FeeRate, Target,
+    float::Ordf32, metrics, Candidate, ChangePolicy, CoinSelector, Drain, DrainWeights, FeeRate,
+    Target,
 };
 use proptest::{prelude::*, proptest, test_runner::*};
 use rand::{prelude::IteratorRandom, Rng, RngCore};
 
 fn test_wv(mut rng: impl RngCore) -> impl Iterator<Item = Candidate> {
     core::iter::repeat_with(move || {
-        let value = rng.gen_range(0, 1_000);
+        let value = rng.gen_range(0..1_000);
         Candidate {
             value,
-            weight: rng.gen_range(0, 100),
-            input_count: rng.gen_range(1, 2),
+            weight: rng.gen_range(0..100),
+            input_count: rng.gen_range(1..2),
             is_segwit: rng.gen_bool(0.5),
         }
     })
@@ -46,7 +47,7 @@ proptest! {
             spend_weight: change_spend_weight,
         };
 
-        let change_policy = bdk_coin_select::change_policy::min_waste(drain, long_term_feerate);
+        let change_policy = ChangePolicy::min_value_and_waste(drain, 0, feerate, long_term_feerate);
         let wv = test_wv(&mut rng);
         let candidates = wv.take(num_inputs).collect::<Vec<_>>();
         println!("candidates: {:#?}", candidates);
@@ -61,7 +62,7 @@ proptest! {
 
         let solutions = cs.bnb_solutions(metrics::Changeless {
             target,
-            change_policy: &change_policy
+            change_policy
         });
 
 
@@ -83,16 +84,16 @@ proptest! {
                     },
                 ];
 
-                cmp_benchmarks.extend((0..10).map(|_|random_minimal_selection(&cs, target, long_term_feerate, &change_policy, &mut rng)));
+                cmp_benchmarks.extend((0..10).map(|_|random_minimal_selection(&cs, target, long_term_feerate, change_policy, &mut rng)));
 
-                let cmp_benchmarks = cmp_benchmarks.into_iter().filter(|cs| cs.is_target_met(target, change_policy(&cs, target)));
+                let cmp_benchmarks = cmp_benchmarks.into_iter().filter(|cs| cs.is_target_met_with_change_policy(target, change_policy));
                 for (_bench_id, bench) in cmp_benchmarks.enumerate() {
-                    prop_assert!(change_policy(&bench, target).is_some() >=  change_policy(&sol, target).is_some());
+                    prop_assert!(bench.drain_value(target, change_policy).is_some() >=  sol.drain_value(target, change_policy).is_some());
                 }
             }
             None => {
                 let mut cs = cs.clone();
-                let mut metric = metrics::Changeless { target, change_policy: &change_policy };
+                let mut metric = metrics::Changeless { target, change_policy };
                 let has_solution = common::exhaustive_search(&mut cs, &mut metric).is_some();
                 assert!(!has_solution);
             }
@@ -107,14 +108,14 @@ fn random_minimal_selection<'a>(
     cs: &CoinSelector<'a>,
     target: Target,
     long_term_feerate: FeeRate,
-    change_policy: &impl Fn(&CoinSelector, Target) -> Drain,
+    change_policy: ChangePolicy,
     rng: &mut impl RngCore,
 ) -> CoinSelector<'a> {
     let mut cs = cs.clone();
     let mut last_waste: Option<f32> = None;
     while let Some(next) = cs.unselected_indices().choose(rng) {
         cs.select(next);
-        if cs.is_target_met(target, change_policy(&cs, target)) {
+        if cs.is_target_met_with_change_policy(target, change_policy) {
             break;
         }
     }

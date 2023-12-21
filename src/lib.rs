@@ -22,7 +22,8 @@ pub mod metrics;
 
 mod feerate;
 pub use feerate::*;
-pub mod change_policy;
+mod change_policy;
+pub use change_policy::*;
 
 /// Txin "base" fields include `outpoint` (32+4) and `nSequence` (4) and 1 byte for the scriptSig
 /// length.
@@ -42,6 +43,9 @@ pub const TR_KEYSPEND_SATISFACTION_WEIGHT: u32 = 66;
 
 /// The additional weight of an output with segwit `v1` (taproot) script pubkey over a blank output (i.e. with weight [`TXOUT_BASE_WEIGHT`]).
 pub const TR_SPK_WEIGHT: u32 = (1 + 1 + 32) * 4; // version + push + key
+
+/// The weight of a taproot TxIn with witness
+pub const TR_KEYSPEND_TXIN_WEIGHT: u32 = TXIN_BASE_WEIGHT + TR_KEYSPEND_SATISFACTION_WEIGHT;
 
 /// Helper to calculate varint size. `v` is the value the varint represents.
 fn varint_size(v: usize) -> u32 {

@@ -1,5 +1,7 @@
 use super::change_lower_bound;
-use crate::{bnb::BnbMetric, float::Ordf32, Candidate, CoinSelector, Drain, FeeRate, Target};
+use crate::{
+    bnb::BnbMetric, float::Ordf32, Candidate, ChangePolicy, CoinSelector, Drain, FeeRate, Target,
+};
 
 /// The "waste" metric used by bitcoin core.
 ///
@@ -18,29 +20,19 @@ use crate::{bnb::BnbMetric, float::Ordf32, Candidate, CoinSelector, Drain, FeeRa
 /// when used in [`CoinSelector::bnb_solutions`]. The waste metric tends to over consolidate funds.
 /// If the `long_term_feerate` is even slightly higher than the current feerate (specified in
 /// `target`) it will select all your coins!
-pub struct Waste<'c, C> {
+#[derive(Clone, Copy, Debug)]
+pub struct Waste {
     /// The target parameters of the resultant selection.
     pub target: Target,
     /// The longterm feerate as part of the waste metric.
     pub long_term_feerate: FeeRate,
     /// Policy to determine the change output (if any) of a given selection.
-    pub change_policy: &'c C,
+    pub change_policy: ChangePolicy,
 }
 
-impl<'c, C> Clone for Waste<'c, C> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<'c, C> Copy for Waste<'c, C> {}
-
-impl<'c, C> BnbMetric for Waste<'c, C>
-where
-    for<'a, 'b> C: Fn(&'b CoinSelector<'a>, Target) -> Drain,
-{
+impl BnbMetric for Waste {
     fn score(&mut self, cs: &CoinSelector<'_>) -> Option<Ordf32> {
-        let drain = (self.change_policy)(cs, self.target);
+        let drain = cs.drain(self.target, self.change_policy);
         if !cs.is_target_met(self.target, drain) {
             return None;
         }
@@ -59,14 +51,14 @@ where
         // duper correct. In testing it seems to come up with pretty good results pretty fast.
         let rate_diff = self.target.feerate.spwu() - self.long_term_feerate.spwu();
         // whether from this coin selection it's possible to avoid change
-        let change_lower_bound = change_lower_bound(cs, self.target, &self.change_policy);
+        let change_lower_bound = change_lower_bound(cs, self.target, self.change_policy);
         const IGNORE_EXCESS: f32 = 0.0;
         const INCLUDE_EXCESS: f32 = 1.0;
 
         if rate_diff >= 0.0 {
             // Our lower bound algorithms differ depending on whether we have already met the target or not.
             if cs.is_target_met(self.target, change_lower_bound) {
-                let current_change = (self.change_policy)(cs, self.target);
+                let current_change = cs.drain(self.target, self.change_policy);
 
                 // first lower bound candidate is just the selection itself
                 let mut lower_bound = cs.waste(
@@ -188,7 +180,7 @@ where
                 if !cs.is_target_met(self.target, Drain::none()) {
                     return None;
                 }
-                let change_at_value_optimum = (self.change_policy)(&cs, self.target);
+                let change_at_value_optimum = cs.drain(self.target, self.change_policy);
                 cs.select_all();
                 // NOTE: we use the change from our "all effective" selection for min waste since
                 // selecting all might not have change but in that case we'll catch it below.
@@ -210,7 +202,7 @@ where
                     .rev()
                     .take_while(|(cs, _, wv)| {
                         wv.effective_value(self.target.feerate).0 < 0.0
-                            || (self.change_policy)(cs, self.target).is_none()
+                            || cs.drain_value(self.target, self.change_policy).is_none()
                     })
                     .last();
 

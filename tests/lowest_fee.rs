@@ -1,8 +1,8 @@
 #![allow(unused_imports)]
 
 mod common;
-use bdk_coin_select::change_policy::{self, min_value_and_waste};
 use bdk_coin_select::metrics::{Changeless, LowestFee};
+use bdk_coin_select::ChangePolicy;
 use bdk_coin_select::{BnbMetric, Candidate, CoinSelector};
 use proptest::prelude::*;
 
@@ -26,9 +26,9 @@ proptest! {
     ) {
         let params = common::StrategyParams { n_candidates, target_value, base_weight, min_fee, feerate, feerate_lt_diff, drain_weight, drain_spend_weight, drain_dust };
         let candidates = common::gen_candidates(params.n_candidates);
-        let change_policy = min_value_and_waste(params.drain_weights(), params.drain_dust, params.long_term_feerate());
-        let metric = LowestFee { target: params.target(), long_term_feerate: params.long_term_feerate(), change_policy: &change_policy };
-        common::can_eventually_find_best_solution(params, candidates, &change_policy, metric)?;
+        let change_policy = ChangePolicy::min_value_and_waste(params.drain_weights(), params.drain_dust, params.feerate(), params.long_term_feerate());
+        let metric = LowestFee { target: params.target(), long_term_feerate: params.long_term_feerate(), change_policy };
+        common::can_eventually_find_best_solution(params, candidates, change_policy, metric)?;
     }
 
     #[test]
@@ -46,9 +46,9 @@ proptest! {
     ) {
         let params = common::StrategyParams { n_candidates, target_value, base_weight, min_fee, feerate, feerate_lt_diff, drain_weight, drain_spend_weight, drain_dust };
         let candidates = common::gen_candidates(params.n_candidates);
-        let change_policy = min_value_and_waste(params.drain_weights(), params.drain_dust, params.long_term_feerate());
-        let metric = LowestFee { target: params.target(), long_term_feerate: params.long_term_feerate(), change_policy: &change_policy };
-        common::ensure_bound_is_not_too_tight(params, candidates, &change_policy, metric)?;
+        let change_policy = ChangePolicy::min_value_and_waste(params.drain_weights(), params.drain_dust, params.feerate(), params.long_term_feerate());
+        let metric = LowestFee { target: params.target(), long_term_feerate: params.long_term_feerate(), change_policy };
+        common::ensure_bound_is_not_too_tight(params, candidates, change_policy, metric)?;
     }
 
     #[test]
@@ -90,16 +90,17 @@ proptest! {
 
         let mut cs = CoinSelector::new(&candidates, params.base_weight);
 
-        let change_policy = min_value_and_waste(
+        let change_policy = ChangePolicy::min_value_and_waste(
             params.drain_weights(),
             params.drain_dust,
+            params.feerate(),
             params.long_term_feerate(),
         );
 
         let metric = LowestFee {
             target: params.target(),
             long_term_feerate: params.long_term_feerate(),
-            change_policy: &change_policy,
+            change_policy,
         };
 
         let (score, rounds) = common::bnb_search(&mut cs, metric, params.n_candidates)?;
@@ -127,21 +128,22 @@ fn combined_changeless_metric() {
     let mut cs_a = CoinSelector::new(&candidates, params.base_weight);
     let mut cs_b = CoinSelector::new(&candidates, params.base_weight);
 
-    let change_policy = min_value_and_waste(
+    let change_policy = ChangePolicy::min_value_and_waste(
         params.drain_weights(),
         params.drain_dust,
+        params.feerate(),
         params.long_term_feerate(),
     );
 
     let metric_lowest_fee = LowestFee {
         target: params.target(),
         long_term_feerate: params.long_term_feerate(),
-        change_policy: &change_policy,
+        change_policy,
     };
 
     let metric_changeless = Changeless {
         target: params.target(),
-        change_policy: &change_policy,
+        change_policy,
     };
 
     let metric_combined = ((metric_lowest_fee, 1.0_f32), (metric_changeless, 0.0_f32));

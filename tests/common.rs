@@ -3,8 +3,8 @@
 use std::any::type_name;
 
 use bdk_coin_select::{
-    float::Ordf32, BnbMetric, Candidate, CoinSelector, Drain, DrainWeights, FeeRate, NoBnbSolution,
-    Target,
+    float::Ordf32, BnbMetric, Candidate, ChangePolicy, CoinSelector, Drain, DrainWeights, FeeRate,
+    NoBnbSolution, Target,
 };
 use proptest::{
     prelude::*,
@@ -17,15 +17,14 @@ use proptest::{
 ///
 /// We don't restrict bnb rounds, so we expect that the bnb result to be equal to the exhaustive
 /// search result.
-pub fn can_eventually_find_best_solution<P, M>(
+pub fn can_eventually_find_best_solution<M>(
     params: StrategyParams,
     candidates: Vec<Candidate>,
-    change_policy: &P,
+    change_policy: ChangePolicy,
     mut metric: M,
 ) -> Result<(), proptest::test_runner::TestCaseError>
 where
     M: BnbMetric,
-    P: Fn(&CoinSelector, Target) -> Drain,
 {
     println!("== TEST ==");
     println!("{}", type_name::<M>());
@@ -44,7 +43,7 @@ where
     println!("\texhaustive search:");
     let now = std::time::Instant::now();
     let exp_result = exhaustive_search(&mut exp_selection, &mut metric);
-    let exp_change = change_policy(&exp_selection, target);
+    let exp_change = exp_selection.drain(target, change_policy);
     let exp_result_str = result_string(&exp_result.ok_or("no possible solution"), exp_change);
     println!(
         "\t\telapsed={:8}s result={}",
@@ -54,7 +53,7 @@ where
     // bonus check: ensure min_fee is respected
     if exp_result.is_some() {
         let selected_value = exp_selection.selected_value();
-        let drain_value = change_policy(&exp_selection, target).value;
+        let drain_value = exp_selection.drain(target, change_policy).value;
         let target_value = target.value;
         assert!(selected_value - target_value - drain_value >= params.min_fee);
     }
@@ -62,7 +61,7 @@ where
     println!("\tbranch and bound:");
     let now = std::time::Instant::now();
     let result = bnb_search(&mut selection, metric, usize::MAX);
-    let change = change_policy(&selection, target);
+    let change = selection.drain(target, change_policy);
     let result_str = result_string(&result, change);
     println!(
         "\t\telapsed={:8}s result={}",
@@ -86,7 +85,7 @@ where
 
             // bonus check: ensure min_fee is respected
             let selected_value = selection.selected_value();
-            let drain_value = change_policy(&selection, target).value;
+            let drain_value = selection.drain(target, change_policy).value;
             let target_value = target.value;
             assert!(selected_value - target_value - drain_value >= params.min_fee);
         }
@@ -100,15 +99,14 @@ where
 /// scores of all descendant branches.
 ///
 /// If this fails, it means the metric's bound function is too tight.
-pub fn ensure_bound_is_not_too_tight<P, M>(
+pub fn ensure_bound_is_not_too_tight<M>(
     params: StrategyParams,
     candidates: Vec<Candidate>,
-    change_policy: &P,
+    change_policy: ChangePolicy,
     mut metric: M,
 ) -> Result<(), proptest::test_runner::TestCaseError>
 where
     M: BnbMetric,
-    P: Fn(&CoinSelector, Target) -> Drain,
 {
     println!("== TEST ==");
     println!("{}", type_name::<M>());
@@ -136,7 +134,7 @@ where
                     "checking branch: selection={} score={} change={} lb={}",
                     cs,
                     score,
-                    change_policy(&cs, target).is_some(),
+                    cs.drain_value(target, change_policy).is_some(),
                     lb_score
                 );
             }
@@ -154,11 +152,11 @@ where
                         descendant={:8} change={} score={}
                         ",
                         cs,
-                        change_policy(&cs, target).is_some(),
+                        cs.drain_value(target, change_policy).is_some(),
                         lb_score,
                         cs.is_target_met(target, Drain::none()),
                         descendant_cs,
-                        change_policy(&descendant_cs, target).is_some(),
+                        descendant_cs.drain_value(target, change_policy).is_some(),
                         descendant_score,
                     );
                 }
@@ -209,9 +207,9 @@ impl StrategyParams {
 pub fn gen_candidates(n: usize) -> Vec<Candidate> {
     let mut rng = TestRng::deterministic_rng(RngAlgorithm::ChaCha);
     core::iter::repeat_with(move || {
-        let value = rng.gen_range(1, 500_001);
-        let weight = rng.gen_range(1, 2001);
-        let input_count = rng.gen_range(1, 3);
+        let value = rng.gen_range(1..500_001);
+        let weight = rng.gen_range(1..2001);
+        let input_count = rng.gen_range(1..3);
         let is_segwit = rng.gen_bool(0.01);
 
         Candidate {
