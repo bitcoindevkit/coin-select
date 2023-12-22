@@ -67,7 +67,7 @@ impl BnbMetric for LowestFee {
 
                 if let Some((_, low_sats_per_wu_candidate)) = cs.unselected().next_back() {
                     let ev = low_sats_per_wu_candidate.effective_value(self.target.feerate);
-                    if ev < 0.0 {
+                    if ev < -0.0 {
                         // we can only reduce excess if ev is negative
                         let value_per_negative_effective_value =
                             low_sats_per_wu_candidate.value as f32 / ev.abs();
@@ -85,7 +85,7 @@ impl BnbMetric for LowestFee {
                             .drain_weights
                             .waste(self.target.feerate, self.long_term_feerate);
                         let best_score_without_change = Ordf32(
-                            current_score.0 - cost_of_change + cost_of_getting_rid_of_change,
+                            current_score.0 + cost_of_getting_rid_of_change - cost_of_change,
                         );
                         if best_score_without_change < current_score {
                             return Some(best_score_without_change);

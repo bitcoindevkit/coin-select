@@ -2,8 +2,8 @@
 
 mod common;
 use bdk_coin_select::metrics::{Changeless, LowestFee};
-use bdk_coin_select::ChangePolicy;
 use bdk_coin_select::{BnbMetric, Candidate, CoinSelector};
+use bdk_coin_select::{ChangePolicy, Drain, DrainWeights, FeeRate, Target};
 use proptest::prelude::*;
 
 proptest! {
@@ -159,4 +159,86 @@ fn combined_changeless_metric() {
     println!("score={:?} rounds={}", combined_score, combined_rounds);
 
     assert!(combined_rounds >= rounds);
+}
+
+/// This test considers the case where you could actually lower your long term fee by adding another input.
+#[test]
+fn adding_another_input_to_remove_change() {
+    let target = Target {
+        feerate: FeeRate::from_sat_per_vb(1.0),
+        min_fee: 0,
+        value: 99_870,
+    };
+
+    let candidates = vec![
+        Candidate {
+            value: 100_000,
+            weight: 100,
+            input_count: 1,
+            is_segwit: true,
+        },
+        Candidate {
+            value: 50_000,
+            weight: 100,
+            input_count: 1,
+            is_segwit: true,
+        },
+        // NOTE: this input has negative effective value
+        Candidate {
+            value: 10,
+            weight: 100,
+            input_count: 1,
+            is_segwit: true,
+        },
+    ];
+
+    let mut cs = CoinSelector::new(&candidates, 200);
+
+    let best_solution = {
+        let mut cs = cs.clone();
+        cs.select(0);
+        cs.select(2);
+        cs.excess(target, Drain::none());
+        assert!(cs.is_target_met(target));
+        cs
+    };
+
+    let drain_weights = DrainWeights {
+        output_weight: 100,
+        spend_weight: 1_000,
+    };
+
+    let excess_to_make_first_candidate_satisfy_but_have_change = {
+        let mut cs = cs.clone();
+        cs.select(0);
+        assert!(cs.is_target_met(target));
+        let with_change_excess = cs.excess(
+            target,
+            Drain {
+                value: 0,
+                weights: drain_weights,
+            },
+        );
+        assert!(with_change_excess > 0);
+        with_change_excess as u64
+    };
+
+    let change_policy = ChangePolicy {
+        min_value: excess_to_make_first_candidate_satisfy_but_have_change - 10,
+        drain_weights,
+    };
+
+    let mut metric = LowestFee {
+        target,
+        long_term_feerate: FeeRate::from_sat_per_vb(1.0),
+        change_policy,
+    };
+
+    let (score, _) = common::bnb_search(&mut cs, metric, 10).expect("finds solution");
+    let best_solution_score = metric.score(&best_solution).expect("must be a solution");
+
+    assert_eq!(best_solution.drain(target, change_policy), Drain::none());
+
+    assert!(score <= best_solution_score);
+    assert_eq!(cs.selected_indices(), best_solution.selected_indices());
 }
