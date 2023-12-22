@@ -77,7 +77,7 @@ proptest! {
                 let mut cmp_benchmarks = vec![
                     {
                         let mut naive_select = cs.clone();
-                        naive_select.sort_candidates_by_key(|(_, wv)| core::cmp::Reverse(wv.effective_value(target.feerate)));
+                        naive_select.sort_candidates_by_key(|(_, wv)| core::cmp::Reverse(Ordf32(wv.effective_value(target.feerate))));
                         // we filter out failing onces below
                         let _ = naive_select.select_until_target_met(target, Drain { weights: drain, value: 0 });
                         naive_select

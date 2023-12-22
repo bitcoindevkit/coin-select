@@ -116,7 +116,7 @@ fn waste_naive_effective_value_shouldnt_be_better() {
         .expect("should find solution");
 
     let mut naive_select = cs.clone();
-    naive_select.sort_candidates_by_key(|(_, wv)| core::cmp::Reverse(wv.value_pwu()));
+    naive_select.sort_candidates_by_key(|(_, wv)| core::cmp::Reverse(Ordf32(wv.value_pwu())));
     // we filter out failing onces below
     let _ = naive_select.select_until_target_met(target, drain);
 

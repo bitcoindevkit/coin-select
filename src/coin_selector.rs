@@ -319,7 +319,9 @@ impl<'a> CoinSelector<'a> {
 
     /// Sorts the candidates by descending value per weight unit, tie-breaking with value.
     pub fn sort_candidates_by_descending_value_pwu(&mut self) {
-        self.sort_candidates_by_key(|(_, wv)| core::cmp::Reverse((wv.value_pwu(), wv.value)));
+        self.sort_candidates_by_key(|(_, wv)| {
+            core::cmp::Reverse((Ordf32(wv.value_pwu()), wv.value))
+        });
     }
 
     /// The waste created by the current selection as measured by the [waste metric].
@@ -487,7 +489,7 @@ impl<'a> CoinSelector<'a> {
         for cand_index in self.candidate_order.iter() {
             if self.selected.contains(cand_index)
                 || self.banned.contains(cand_index)
-                || self.candidates[*cand_index].effective_value(feerate) <= Ordf32(0.0)
+                || self.candidates[*cand_index].effective_value(feerate) <= 0.0
             {
                 continue;
             }
@@ -632,13 +634,13 @@ impl Candidate {
     }
 
     /// Effective value of this input candidate: `actual_value - input_weight * feerate (sats/wu)`.
-    pub fn effective_value(&self, feerate: FeeRate) -> Ordf32 {
-        Ordf32(self.value as f32 - (self.weight as f32 * feerate.spwu()))
+    pub fn effective_value(&self, feerate: FeeRate) -> f32 {
+        self.value as f32 - (self.weight as f32 * feerate.spwu())
     }
 
     /// Value per weight unit
-    pub fn value_pwu(&self) -> Ordf32 {
-        Ordf32(self.value as f32 / self.weight as f32)
+    pub fn value_pwu(&self) -> f32 {
+        self.value as f32 / self.weight as f32
     }
 }
 
@@ -669,11 +671,12 @@ impl DrainWeights {
         (self.spend_weight as f32 * long_term_feerate.spwu()).ceil() as u64
     }
 
-    /// Create [`DrainWeights`] that represents a drain output with a taproot keyspend.
+    /// Create [`DrainWeights`] that represents a drain output that will be spent with a taproot
+    /// keyspend
     pub fn new_tr_keyspend() -> Self {
         Self {
             output_weight: TXOUT_BASE_WEIGHT + TR_SPK_WEIGHT,
-            spend_weight: TXIN_BASE_WEIGHT + TR_KEYSPEND_SATISFACTION_WEIGHT,
+            spend_weight: TR_KEYSPEND_TXIN_WEIGHT,
         }
     }
 }

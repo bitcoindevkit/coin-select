@@ -235,20 +235,23 @@ let candidates = candidate_txouts
     .collect::<Vec<_>>();
 
 let mut selector = CoinSelector::new(&candidates, base_weight);
-let _result = selector
-    .select_until_target_met(target,  Drain::none());
-
-// Determine what the drain output will be, based on our selection.
-let drain = selector.drain(target, change_policy);
-
-// In theory the target must always still be met at this point
-assert!(selector.is_target_met(target, drain));
+selector
+    .select_until_target_met(target,  Drain::none())
+    .expect("we've got enough coins");
 
 // Get a list of coins that are selected.
 let selected_coins = selector
     .apply_selection(&candidate_txouts)
     .collect::<Vec<_>>();
 assert_eq!(selected_coins.len(), 1);
+
+// Determine whether we should add a change output.
+let drain = selector.drain(target, change_policy);
+
+if drain.is_some() {
+    // add our change outupt to the transaction
+    let change_value = drain.value;
+}
 ```
 
 # Minimum Supported Rust Version (MSRV)

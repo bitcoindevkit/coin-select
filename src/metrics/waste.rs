@@ -80,7 +80,7 @@ impl BnbMetric for Waste {
                         .select_iter()
                         .rev()
                         .take_while(|(cs, _, wv)| {
-                            wv.effective_value(self.target.feerate) < Ordf32(0.0)
+                            wv.effective_value(self.target.feerate) < 0.0
                                 && cs.is_target_met(self.target)
                         })
                         .last();
@@ -88,7 +88,7 @@ impl BnbMetric for Waste {
                     if let Some((cs, _, _)) = selection_with_as_much_negative_ev_as_possible {
                         let can_do_better_by_slurping =
                             cs.unselected().next_back().and_then(|(_, wv)| {
-                                if wv.effective_value(self.target.feerate).0 < 0.0 {
+                                if wv.effective_value(self.target.feerate) < 0.0 {
                                     Some(wv)
                                 } else {
                                     None
@@ -149,8 +149,7 @@ impl BnbMetric for Waste {
                     let remaining_rate = cs.rate_excess(self.target, change_lower_bound);
                     let remaining_abs = cs.absolute_excess(self.target, change_lower_bound);
 
-                    let weight_to_satisfy_abs =
-                        remaining_abs.min(0) as f32 / to_slurp.value_pwu().0;
+                    let weight_to_satisfy_abs = remaining_abs.min(0) as f32 / to_slurp.value_pwu();
 
                     let weight_to_satisfy_rate =
                         slurp_wv(to_slurp, remaining_rate.min(0), self.target.feerate);
@@ -201,7 +200,7 @@ impl BnbMetric for Waste {
                     .select_iter()
                     .rev()
                     .take_while(|(cs, _, wv)| {
-                        wv.effective_value(self.target.feerate).0 < 0.0
+                        wv.effective_value(self.target.feerate) < 0.0
                             || cs.drain_value(self.target, self.change_policy).is_none()
                     })
                     .last();
