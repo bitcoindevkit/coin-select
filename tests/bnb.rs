@@ -100,7 +100,7 @@ fn bnb_finds_an_exact_solution_in_n_iter() {
         .last()
         .expect("it found a solution");
 
-    assert_eq!(rounds, 50180);
+    assert_eq!(rounds, 50168);
     assert_eq!(best.input_weight(), solution_weight);
     assert_eq!(best.selected_value(), target.value, "score={:?}", score);
 }
@@ -154,7 +154,7 @@ proptest! {
 
         match solutions.enumerate().filter_map(|(i, sol)| Some((i, sol?))).last() {
             Some((_i, (sol, _score))) => assert!(sol.selected_value() >= target.value),
-            _ => prop_assert!(!cs.is_selection_possible(target, Drain::none())),
+            _ => prop_assert!(!cs.is_selection_possible(target)),
         }
     }
 

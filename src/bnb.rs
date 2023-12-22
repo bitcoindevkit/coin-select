@@ -51,24 +51,22 @@ impl<'a, M: BnbMetric> Iterator for BnbIter<'a, M> {
 
         let selector = branch.selector;
 
+        let mut return_val = None;
+        if !branch.is_exclusion {
+            if let Some(score) = self.metric.score(&selector) {
+                let better = match self.best {
+                    Some(best_score) => score < best_score,
+                    None => true,
+                };
+                if better {
+                    self.best = Some(score);
+                    return_val = Some(score);
+                }
+            };
+        }
+
         self.insert_new_branches(&selector);
-
-        if branch.is_exclusion {
-            return Some(None);
-        }
-
-        let score = match self.metric.score(&selector) {
-            Some(score) => score,
-            None => return Some(None),
-        };
-
-        if let Some(best_score) = &self.best {
-            if score >= *best_score {
-                return Some(None);
-            }
-        }
-        self.best = Some(score);
-        Some(Some((selector, score)))
+        Some(return_val.map(|score| (selector, score)))
     }
 }
 
@@ -92,7 +90,11 @@ impl<'a, M: BnbMetric> BnbIter<'a, M> {
     fn consider_adding_to_queue(&mut self, cs: &CoinSelector<'a>, is_exclusion: bool) {
         let bound = self.metric.bound(cs);
         if let Some(bound) = bound {
-            if self.best.is_none() || self.best.as_ref().unwrap() >= &bound {
+            let is_good_enough = match self.best {
+                Some(best) => best > bound,
+                None => true,
+            };
+            if is_good_enough {
                 let branch = Branch {
                     lower_bound: bound,
                     selector: cs.clone(),
