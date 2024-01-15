@@ -666,7 +666,7 @@ impl DrainWeights {
             + self.spend_weight as f32 * long_term_feerate.spwu()
     }
 
-    /// The the fee you will pay to spend this otuput in the future.
+    /// The fee you will pay to spend these change output(s) in the future.
     pub fn spend_fee(&self, long_term_feerate: FeeRate) -> u64 {
         (self.spend_weight as f32 * long_term_feerate.spwu()).ceil() as u64
     }

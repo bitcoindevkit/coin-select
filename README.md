@@ -249,7 +249,7 @@ assert_eq!(selected_coins.len(), 1);
 let drain = selector.drain(target, change_policy);
 
 if drain.is_some() {
-    // add our change outupt to the transaction
+    // add our change output to the transaction
     let change_value = drain.value;
 }
 ```
