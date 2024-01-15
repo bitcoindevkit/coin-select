@@ -25,7 +25,7 @@ fn change_lower_bound(cs: &CoinSelector, target: Target, change_policy: ChangePo
         let mut least_excess = cs.clone();
         cs.unselected()
             .rev()
-            .take_while(|(_, wv)| wv.effective_value(target.feerate) < Ordf32(0.0))
+            .take_while(|(_, wv)| wv.effective_value(target.feerate) < 0.0)
             .for_each(|(index, _)| {
                 least_excess.select(index);
             });

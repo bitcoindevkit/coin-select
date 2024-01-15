@@ -169,29 +169,10 @@ impl<'a> CoinSelector<'a> {
     /// enough value.
     ///
     /// [`ban`]: Self::ban
-    pub fn is_selection_possible(&self, target: Target, drain: Drain) -> bool {
+    pub fn is_selection_possible(&self, target: Target) -> bool {
         let mut test = self.clone();
         test.select_all_effective(target.feerate);
-        test.is_target_met(target, drain)
-    }
-
-    /// Is meeting the target *plausible* with this `change_policy`.
-    /// Note this will respect [`ban`]ned candidates.
-    ///
-    /// This is very similar to [`is_selection_possible`] except that you pass in a change policy.
-    /// This method will give the right answer as long as `change_policy` is monotone but otherwise
-    /// can it can give false negatives.
-    ///
-    /// [`ban`]: Self::ban
-    /// [`is_selection_possible`]: Self::is_selection_possible
-    pub fn is_selection_plausible_with_change_policy(
-        &self,
-        target: Target,
-        change_policy: &impl Fn(&CoinSelector<'a>, Target) -> Drain,
-    ) -> bool {
-        let mut test = self.clone();
-        test.select_all_effective(target.feerate);
-        test.is_target_met(target, change_policy(&test, target))
+        test.is_target_met(target)
     }
 
     /// Returns true if no candidates have been selected.
@@ -283,6 +264,14 @@ impl<'a> CoinSelector<'a> {
         (self.weight(drain_weight) as f32 * feerate.spwu()).ceil() as u64
     }
 
+    /// The actual fee the selection would pay if it was used in a transaction that had
+    /// `target_value` value for outputs and change output of `drain_value`.
+    ///
+    /// This can be negative when the selection is invalid (outputs are greater than inputs).
+    pub fn fee(&self, target_value: u64, drain_value: u64) -> i64 {
+        self.selected_value() as i64 - target_value as i64 - drain_value as i64
+    }
+
     /// The value of the current selected inputs minus the fee needed to pay for the selected inputs
     pub fn effective_value(&self, feerate: FeeRate) -> i64 {
         self.selected_value() as i64 - (self.input_weight() as f32 * feerate.spwu()).ceil() as i64
@@ -330,7 +319,9 @@ impl<'a> CoinSelector<'a> {
 
     /// Sorts the candidates by descending value per weight unit, tie-breaking with value.
     pub fn sort_candidates_by_descending_value_pwu(&mut self) {
-        self.sort_candidates_by_key(|(_, wv)| core::cmp::Reverse((wv.value_pwu(), wv.value)));
+        self.sort_candidates_by_key(|(_, wv)| {
+            core::cmp::Reverse((Ordf32(wv.value_pwu()), wv.value))
+        });
     }
 
     /// The waste created by the current selection as measured by the [waste metric].
@@ -405,9 +396,20 @@ impl<'a> CoinSelector<'a> {
         self.unselected_indices().next().is_none()
     }
 
-    /// Whether the constraints of `Target` have been met if we include the `drain` ouput.
-    pub fn is_target_met(&self, target: Target, drain: Drain) -> bool {
+    /// Whether the constraints of `Target` have been met if we include a specific `drain` ouput.
+    ///
+    /// Note if [`is_target_met`] is true and the `drain` is produced from the [`drain`] method then
+    /// this method will also always be true.
+    ///
+    /// [`is_target_met`]: Self::is_target_met
+    /// [`drain`]: Self::drain
+    pub fn is_target_met_with_drain(&self, target: Target, drain: Drain) -> bool {
         self.excess(target, drain) >= 0
+    }
+
+    /// Whether the constraints of `Target` have been met.
+    pub fn is_target_met(&self, target: Target) -> bool {
+        self.is_target_met_with_drain(target, Drain::none())
     }
 
     /// Whether the constrains of `Target` have been met if we include the drain (change) output
@@ -417,7 +419,7 @@ impl<'a> CoinSelector<'a> {
         target: Target,
         change_policy: ChangePolicy,
     ) -> bool {
-        self.is_target_met(target, self.drain(target, change_policy))
+        self.is_target_met_with_drain(target, self.drain(target, change_policy))
     }
 
     /// Select all unselected candidates
@@ -442,17 +444,34 @@ impl<'a> CoinSelector<'a> {
             },
         );
         if excess > change_policy.min_value as i64 {
+            debug_assert_eq!(
+                self.is_target_met(target),
+                self.is_target_met_with_drain(
+                    target,
+                    Drain {
+                        weights: change_policy.drain_weights,
+                        value: excess as u64
+                    }
+                ),
+                "if the target is met without a drain it must be met after adding the drain"
+            );
             Some(excess as u64)
         } else {
             None
         }
     }
 
-    /// Convienince method that calls [`drain_value`] and converts the result into `Drain` by using
-    /// the provided `DrainWeights`. Note carefully that the `change_policy` should have been
-    /// calculated with the same `DrainWeights`.
+    /// Figures out whether the current selection should have a change output given the
+    /// `change_policy`. If it shouldn't then it will return a `Drain` where [`Drain::is_none`] is
+    /// true. The value of the `Drain` will be the same as [`drain_value`].
+    ///
+    /// If [`is_target_met`] returns true for this selection then [`is_target_met_with_drain`] will
+    /// also be true if you pass in the drain returned from this method.
     ///
     /// [`drain_value`]: Self::drain_value
+    /// [`is_target_met_with_drain`]: Self::is_target_met_with_drain
+    /// [`is_target_met`]: Self::is_target_met
+    #[must_use]
     pub fn drain(&self, target: Target, change_policy: ChangePolicy) -> Drain {
         match self.drain_value(target, change_policy) {
             Some(value) => Drain {
@@ -470,7 +489,7 @@ impl<'a> CoinSelector<'a> {
         for cand_index in self.candidate_order.iter() {
             if self.selected.contains(cand_index)
                 || self.banned.contains(cand_index)
-                || self.candidates[*cand_index].effective_value(feerate) <= Ordf32(0.0)
+                || self.candidates[*cand_index].effective_value(feerate) <= 0.0
             {
                 continue;
             }
@@ -486,7 +505,7 @@ impl<'a> CoinSelector<'a> {
         target: Target,
         drain: Drain,
     ) -> Result<(), InsufficientFunds> {
-        self.select_until(|cs| cs.is_target_met(target, drain))
+        self.select_until(|cs| cs.is_target_met_with_drain(target, drain))
             .ok_or_else(|| InsufficientFunds {
                 missing: self.excess(target, drain).unsigned_abs(),
             })
@@ -615,13 +634,13 @@ impl Candidate {
     }
 
     /// Effective value of this input candidate: `actual_value - input_weight * feerate (sats/wu)`.
-    pub fn effective_value(&self, feerate: FeeRate) -> Ordf32 {
-        Ordf32(self.value as f32 - (self.weight as f32 * feerate.spwu()))
+    pub fn effective_value(&self, feerate: FeeRate) -> f32 {
+        self.value as f32 - (self.weight as f32 * feerate.spwu())
     }
 
     /// Value per weight unit
-    pub fn value_pwu(&self) -> Ordf32 {
-        Ordf32(self.value as f32 / self.weight as f32)
+    pub fn value_pwu(&self) -> f32 {
+        self.value as f32 / self.weight as f32
     }
 }
 
@@ -647,11 +666,17 @@ impl DrainWeights {
             + self.spend_weight as f32 * long_term_feerate.spwu()
     }
 
-    /// Create [`DrainWeights`] that represents a drain output with a taproot keyspend.
+    /// The fee you will pay to spend these change output(s) in the future.
+    pub fn spend_fee(&self, long_term_feerate: FeeRate) -> u64 {
+        (self.spend_weight as f32 * long_term_feerate.spwu()).ceil() as u64
+    }
+
+    /// Create [`DrainWeights`] that represents a drain output that will be spent with a taproot
+    /// keyspend
     pub fn new_tr_keyspend() -> Self {
         Self {
             output_weight: TXOUT_BASE_WEIGHT + TR_SPK_WEIGHT,
-            spend_weight: TXIN_BASE_WEIGHT + TR_KEYSPEND_SATISFACTION_WEIGHT,
+            spend_weight: TR_KEYSPEND_TXIN_WEIGHT,
         }
     }
 }

@@ -33,7 +33,7 @@ pub struct Waste {
 impl BnbMetric for Waste {
     fn score(&mut self, cs: &CoinSelector<'_>) -> Option<Ordf32> {
         let drain = cs.drain(self.target, self.change_policy);
-        if !cs.is_target_met(self.target, drain) {
+        if !cs.is_target_met_with_drain(self.target, drain) {
             return None;
         }
         let score = cs.waste(self.target, self.long_term_feerate, drain, 1.0);
@@ -57,7 +57,7 @@ impl BnbMetric for Waste {
 
         if rate_diff >= 0.0 {
             // Our lower bound algorithms differ depending on whether we have already met the target or not.
-            if cs.is_target_met(self.target, change_lower_bound) {
+            if cs.is_target_met_with_drain(self.target, change_lower_bound) {
                 let current_change = cs.drain(self.target, self.change_policy);
 
                 // first lower bound candidate is just the selection itself
@@ -80,15 +80,15 @@ impl BnbMetric for Waste {
                         .select_iter()
                         .rev()
                         .take_while(|(cs, _, wv)| {
-                            wv.effective_value(self.target.feerate).0 < 0.0
-                                && cs.is_target_met(self.target, Drain::none())
+                            wv.effective_value(self.target.feerate) < 0.0
+                                && cs.is_target_met(self.target)
                         })
                         .last();
 
                     if let Some((cs, _, _)) = selection_with_as_much_negative_ev_as_possible {
                         let can_do_better_by_slurping =
                             cs.unselected().next_back().and_then(|(_, wv)| {
-                                if wv.effective_value(self.target.feerate).0 < 0.0 {
+                                if wv.effective_value(self.target.feerate) < 0.0 {
                                     Some(wv)
                                 } else {
                                     None
@@ -133,10 +133,10 @@ impl BnbMetric for Waste {
                 // weight.
                 //
                 // Step 1: select everything up until the input that hits the target.
-                let (mut cs, slurp_index, to_slurp) = cs
-                    .clone()
-                    .select_iter()
-                    .find(|(cs, _, _)| cs.is_target_met(self.target, change_lower_bound))?;
+                let (mut cs, slurp_index, to_slurp) =
+                    cs.clone().select_iter().find(|(cs, _, _)| {
+                        cs.is_target_met_with_drain(self.target, change_lower_bound)
+                    })?;
 
                 cs.deselect(slurp_index);
 
@@ -149,8 +149,7 @@ impl BnbMetric for Waste {
                     let remaining_rate = cs.rate_excess(self.target, change_lower_bound);
                     let remaining_abs = cs.absolute_excess(self.target, change_lower_bound);
 
-                    let weight_to_satisfy_abs =
-                        remaining_abs.min(0) as f32 / to_slurp.value_pwu().0;
+                    let weight_to_satisfy_abs = remaining_abs.min(0) as f32 / to_slurp.value_pwu();
 
                     let weight_to_satisfy_rate =
                         slurp_wv(to_slurp, remaining_rate.min(0), self.target.feerate);
@@ -177,7 +176,7 @@ impl BnbMetric for Waste {
                 let mut cs = cs.clone();
                 // ... but first check that by selecting all effective we can actually reach target
                 cs.select_all_effective(self.target.feerate);
-                if !cs.is_target_met(self.target, Drain::none()) {
+                if !cs.is_target_met(self.target) {
                     return None;
                 }
                 let change_at_value_optimum = cs.drain(self.target, self.change_policy);
@@ -201,7 +200,7 @@ impl BnbMetric for Waste {
                     .select_iter()
                     .rev()
                     .take_while(|(cs, _, wv)| {
-                        wv.effective_value(self.target.feerate).0 < 0.0
+                        wv.effective_value(self.target.feerate) < 0.0
                             || cs.drain_value(self.target, self.change_policy).is_none()
                     })
                     .last();
