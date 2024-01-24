@@ -52,12 +52,13 @@ impl BnbMetric for LowestFee {
 
             let drain_value = cs.drain_value(self.target, self.change_policy);
 
+            // I think this whole if statement could be removed if we made this metric decide the change policy
             if let Some(drain_value) = drain_value {
-                // it's possible that adding another input might reduce your long term fee if it gets
-                // rid of an expensive change output. Our strategy is to take the lowest sat per
-                // value candidate we have and use it as a benchmark. We imagine it has the perfect
-                // value (but the same sats per weight unit) to get rid of the change output by
-                // adding negative effective value (i.e. perfectly reducing excess to the point
+                // it's possible that adding another input might reduce your long term fee if it
+                // gets rid of an expensive change output. Our strategy is to take the lowest sat
+                // per value candidate we have and use it as a benchmark. We imagine it has the
+                // perfect value (but the same sats per weight unit) to get rid of the change output
+                // by adding negative effective value (i.e. perfectly reducing excess to the point
                 // where change wouldn't be added according to the policy).
                 //
                 // TODO: This metric could be tighter by being more complicated but this seems to be
@@ -90,6 +91,19 @@ impl BnbMetric for LowestFee {
                             return Some(best_score_without_change);
                         }
                     }
+                }
+            } else {
+                // Ok but maybe adding change could improve the metric?
+                let cost_of_adding_change = self
+                    .change_policy
+                    .drain_weights
+                    .waste(self.target.fee.rate, self.long_term_feerate);
+                let cost_of_no_change = cs.excess(self.target, Drain::none());
+
+                let best_score_with_change =
+                    Ordf32(current_score.0 - cost_of_no_change as f32 + cost_of_adding_change);
+                if best_score_with_change < current_score {
+                    return Some(best_score_with_change);
                 }
             }
 
