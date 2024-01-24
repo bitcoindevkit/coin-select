@@ -1,7 +1,9 @@
 use super::*;
 #[allow(unused)] // some bug in <= 1.48.0 sees this as unused when it isn't
 use crate::float::FloatExt;
-use crate::{bnb::BnbMetric, change_policy::ChangePolicy, float::Ordf32, FeeRate};
+use crate::{
+    bnb::BnbMetric, change_policy::ChangePolicy, float::Ordf32, FeeRate, Target, TargetFee,
+};
 use alloc::{borrow::Cow, collections::BTreeSet, vec::Vec};
 
 /// [`CoinSelector`] selects/deselects coins from a set of canididate coins.
@@ -18,27 +20,6 @@ pub struct CoinSelector<'a> {
     selected: Cow<'a, BTreeSet<usize>>,
     banned: Cow<'a, BTreeSet<usize>>,
     candidate_order: Cow<'a, Vec<usize>>,
-}
-
-/// A target value to select for along with feerate constraints.
-#[derive(Debug, Clone, Copy)]
-pub struct Target {
-    /// The minimum feerate that the selection must have
-    pub feerate: FeeRate,
-    /// The minimum fee the selection must have
-    pub min_fee: u64,
-    /// The minmum value that should be left for the output
-    pub value: u64,
-}
-
-impl Default for Target {
-    fn default() -> Self {
-        Self {
-            feerate: FeeRate::default_min_relay_fee(),
-            min_fee: 0,
-            value: 0,
-        }
-    }
 }
 
 impl<'a> CoinSelector<'a> {
@@ -171,7 +152,7 @@ impl<'a> CoinSelector<'a> {
     /// [`ban`]: Self::ban
     pub fn is_selection_possible(&self, target: Target) -> bool {
         let mut test = self.clone();
-        test.select_all_effective(target.feerate);
+        test.select_all_effective(target.fee.rate);
         test.is_target_met(target)
     }
 
@@ -223,41 +204,60 @@ impl<'a> CoinSelector<'a> {
     ///
     /// In order for the resulting transaction to be valid this must be 0.
     pub fn excess(&self, target: Target, drain: Drain) -> i64 {
-        self.selected_value() as i64
-            - target.value as i64
-            - drain.value as i64
-            - self.implied_fee(target.feerate, target.min_fee, drain.weights.output_weight) as i64
+        self.rate_excess(target, drain)
+            .min(self.replacement_excess(target, drain))
     }
 
-    /// How much the current selection overshoots the value need to satisfy `target.feerate` and
+    /// How much the current selection overshoots the value need to satisfy `target.fee.rate` and
     /// `target.value` (while ignoring `target.min_fee`).
     pub fn rate_excess(&self, target: Target, drain: Drain) -> i64 {
         self.selected_value() as i64
             - target.value as i64
             - drain.value as i64
-            - self.implied_fee_from_feerate(target.feerate, drain.weights.output_weight) as i64
+            - self.implied_fee_from_feerate(target.fee.rate, drain.weights.output_weight) as i64
     }
 
-    /// How much the current selection overshoots the value needed to satisfy `target.min_fee` and
-    /// `target.value` (while ignoring `target.feerate`).
-    pub fn absolute_excess(&self, target: Target, drain: Drain) -> i64 {
+    /// How much the current selection overshoots the value needed to satisfy RBF's rule 4.
+    pub fn replacement_excess(&self, target: Target, drain: Drain) -> i64 {
+        let mut replacement_excess_needed = 0;
+        if let Some(replace) = target.fee.replace {
+            replacement_excess_needed =
+                replace.min_fee_to_do_replacement(self.weight(drain.weights.output_weight))
+        }
         self.selected_value() as i64
             - target.value as i64
             - drain.value as i64
-            - target.min_fee as i64
+            - replacement_excess_needed as i64
     }
 
     /// The feerate the transaction would have if we were to use this selection of inputs to achieve
     /// the `target_value`.
-    pub fn implied_feerate(&self, target_value: u64, drain: Drain) -> FeeRate {
+    ///
+    /// Returns `None` if the feerate would be negative or infinity.
+    pub fn implied_feerate(&self, target_value: u64, drain: Drain) -> Option<FeeRate> {
         let numerator = self.selected_value() as i64 - target_value as i64 - drain.value as i64;
         let denom = self.weight(drain.weights.output_weight);
-        FeeRate::from_sat_per_wu(numerator as f32 / denom as f32)
+        if numerator < 0 || denom == 0 {
+            return None;
+        }
+        Some(FeeRate::from_sat_per_wu(numerator as f32 / denom as f32))
     }
 
-    /// The fee the current selection should pay to reach `feerate` and provide `min_fee`
-    fn implied_fee(&self, feerate: FeeRate, min_fee: u64, drain_weight: u32) -> u64 {
-        (self.implied_fee_from_feerate(feerate, drain_weight)).max(min_fee)
+    /// The fee the current selection and `drain_weight` should pay to satisfy `target_fee`.
+    ///
+    /// `drain_weight` can be 0 to indicate no draining output
+    pub fn implied_fee(&self, target_fee: TargetFee, drain_weight: u32) -> u64 {
+        let mut implied_fee = self.implied_fee_from_feerate(target_fee.rate, drain_weight);
+
+        if let Some(replace) = target_fee.replace {
+            implied_fee = implied_fee.max(self.implied_fee_from_replace(replace, drain_weight));
+        }
+
+        implied_fee
+    }
+
+    fn implied_fee_from_replace(&self, replace: Replace, drain_weight: u32) -> u64 {
+        replace.min_fee_to_do_replacement(self.weight(drain_weight))
     }
 
     fn implied_fee_from_feerate(&self, feerate: FeeRate, drain_weight: u32) -> u64 {
@@ -337,7 +337,7 @@ impl<'a> CoinSelector<'a> {
         excess_discount: f32,
     ) -> f32 {
         debug_assert!((0.0..=1.0).contains(&excess_discount));
-        let mut waste = self.input_waste(target.feerate, long_term_feerate);
+        let mut waste = self.input_waste(target.fee.rate, long_term_feerate);
 
         if drain.is_none() {
             // We don't allow negative excess waste since negative excess just means you haven't
@@ -348,7 +348,7 @@ impl<'a> CoinSelector<'a> {
             excess_waste *= excess_discount.max(0.0).min(1.0);
             waste += excess_waste;
         } else {
-            waste += drain.weights.output_weight as f32 * target.feerate.spwu()
+            waste += drain.weights.output_weight as f32 * target.fee.rate.spwu()
                 + drain.weights.spend_weight as f32 * long_term_feerate.spwu();
         }
 
@@ -412,16 +412,6 @@ impl<'a> CoinSelector<'a> {
         self.is_target_met_with_drain(target, Drain::none())
     }
 
-    /// Whether the constrains of `Target` have been met if we include the drain (change) output
-    /// when `change_policy` decides it should be present.
-    pub fn is_target_met_with_change_policy(
-        &self,
-        target: Target,
-        change_policy: ChangePolicy,
-    ) -> bool {
-        self.is_target_met_with_drain(target, self.drain(target, change_policy))
-    }
-
     /// Select all unselected candidates
     pub fn select_all(&mut self) {
         loop {
@@ -462,8 +452,8 @@ impl<'a> CoinSelector<'a> {
     }
 
     /// Figures out whether the current selection should have a change output given the
-    /// `change_policy`. If it shouldn't then it will return a `Drain` where [`Drain::is_none`] is
-    /// true. The value of the `Drain` will be the same as [`drain_value`].
+    /// `change_policy`. If it shouldn't then it will return a [`Drain::none`]. The value of the
+    /// `Drain` will be the same as [`drain_value`].
     ///
     /// If [`is_target_met`] returns true for this selection then [`is_target_met_with_drain`] will
     /// also be true if you pass in the drain returned from this method.
@@ -499,15 +489,11 @@ impl<'a> CoinSelector<'a> {
 
     /// Select candidates until `target` has been met assuming the `drain` output is attached.
     ///
-    /// Returns an `Some(_)` if it was able to meet the target.
-    pub fn select_until_target_met(
-        &mut self,
-        target: Target,
-        drain: Drain,
-    ) -> Result<(), InsufficientFunds> {
-        self.select_until(|cs| cs.is_target_met_with_drain(target, drain))
+    /// Returns an error if the target was unable to be met.
+    pub fn select_until_target_met(&mut self, target: Target) -> Result<(), InsufficientFunds> {
+        self.select_until(|cs| cs.is_target_met(target))
             .ok_or_else(|| InsufficientFunds {
-                missing: self.excess(target, drain).unsigned_abs(),
+                missing: self.excess(target, Drain::none()).unsigned_abs(),
             })
     }
 
@@ -595,129 +581,6 @@ impl<'a> core::fmt::Display for CoinSelector<'a> {
     }
 }
 
-/// A `Candidate` represents an input candidate for [`CoinSelector`].
-///
-/// This can either be a single UTXO, or a group of UTXOs that should be spent together.
-#[derive(Debug, Clone, Copy)]
-pub struct Candidate {
-    /// Total value of the UTXO(s) that this [`Candidate`] represents.
-    pub value: u64,
-    /// Total weight of including this/these UTXO(s).
-    /// `txin` fields: `prevout`, `nSequence`, `scriptSigLen`, `scriptSig`, `scriptWitnessLen`,
-    /// `scriptWitness` should all be included.
-    pub weight: u32,
-    /// Total number of inputs; so we can calculate extra `varint` weight due to `vin` len changes.
-    pub input_count: usize,
-    /// Whether this [`Candidate`] contains at least one segwit spend.
-    pub is_segwit: bool,
-}
-
-impl Candidate {
-    /// Create a [`Candidate`] input that spends a single taproot keyspend output.
-    pub fn new_tr_keyspend(value: u64) -> Self {
-        let weight = TXIN_BASE_WEIGHT + TR_KEYSPEND_SATISFACTION_WEIGHT;
-        Self::new(value, weight, true)
-    }
-
-    /// Create a new [`Candidate`] that represents a single input.
-    ///
-    /// `satisfaction_weight` is the weight of `scriptSigLen + scriptSig + scriptWitnessLen +
-    /// scriptWitness`.
-    pub fn new(value: u64, satisfaction_weight: u32, is_segwit: bool) -> Candidate {
-        let weight = TXIN_BASE_WEIGHT + satisfaction_weight;
-        Candidate {
-            value,
-            weight,
-            input_count: 1,
-            is_segwit,
-        }
-    }
-
-    /// Effective value of this input candidate: `actual_value - input_weight * feerate (sats/wu)`.
-    pub fn effective_value(&self, feerate: FeeRate) -> f32 {
-        self.value as f32 - (self.weight as f32 * feerate.spwu())
-    }
-
-    /// Value per weight unit
-    pub fn value_pwu(&self) -> f32 {
-        self.value as f32 / self.weight as f32
-    }
-}
-
-/// Represents the weight costs of a drain (a.k.a. change) output.
-///
-/// May also represent multiple outputs.
-#[derive(Default, Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub struct DrainWeights {
-    /// The weight of including this drain output.
-    ///
-    /// This must take into account the weight change from varint output count.
-    pub output_weight: u32,
-    /// The weight of spending this drain output (in the future).
-    pub spend_weight: u32,
-}
-
-impl DrainWeights {
-    /// The waste of adding this drain to a transaction according to the [waste metric].
-    ///
-    /// [waste metric]: https://bitcoin.stackexchange.com/questions/113622/what-does-waste-metric-mean-in-the-context-of-coin-selection
-    pub fn waste(&self, feerate: FeeRate, long_term_feerate: FeeRate) -> f32 {
-        self.output_weight as f32 * feerate.spwu()
-            + self.spend_weight as f32 * long_term_feerate.spwu()
-    }
-
-    /// The fee you will pay to spend these change output(s) in the future.
-    pub fn spend_fee(&self, long_term_feerate: FeeRate) -> u64 {
-        (self.spend_weight as f32 * long_term_feerate.spwu()).ceil() as u64
-    }
-
-    /// Create [`DrainWeights`] that represents a drain output that will be spent with a taproot
-    /// keyspend
-    pub fn new_tr_keyspend() -> Self {
-        Self {
-            output_weight: TXOUT_BASE_WEIGHT + TR_SPK_WEIGHT,
-            spend_weight: TR_KEYSPEND_TXIN_WEIGHT,
-        }
-    }
-}
-
-/// A drain (A.K.A. change) output.
-/// Technically it could represent multiple outputs.
-///
-/// This is returned from [`CoinSelector::drain`]. Note if `drain` returns a drain where `is_none()`
-/// returns true then **no change should be added** to the transaction.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
-pub struct Drain {
-    /// Weight of adding drain output and spending the drain output.
-    pub weights: DrainWeights,
-    /// The value that should be assigned to the drain.
-    pub value: u64,
-}
-
-impl Drain {
-    /// A drian representing no drain at all.
-    pub fn none() -> Self {
-        Self::default()
-    }
-
-    /// is the "none" drain
-    pub fn is_none(&self) -> bool {
-        self == &Drain::none()
-    }
-
-    /// Is not the "none" drain
-    pub fn is_some(&self) -> bool {
-        !self.is_none()
-    }
-
-    /// The waste of adding this drain to a transaction according to the [waste metric].
-    ///
-    /// [waste metric]: https://bitcoin.stackexchange.com/questions/113622/what-does-waste-metric-mean-in-the-context-of-coin-selection
-    pub fn waste(&self, feerate: FeeRate, long_term_feerate: FeeRate) -> f32 {
-        self.weights.waste(feerate, long_term_feerate)
-    }
-}
-
 /// The `SelectIter` allows you to select candidates by calling [`Iterator::next`].
 ///
 /// The [`Iterator::Item`] is a tuple of `(selector, last_selected_index, last_selected_candidate)`.
@@ -780,3 +643,72 @@ impl core::fmt::Display for NoBnbSolution {
 
 #[cfg(feature = "std")]
 impl std::error::Error for NoBnbSolution {}
+
+/// A `Candidate` represents an input candidate for [`CoinSelector`].
+///
+/// This can either be a single UTXO, or a group of UTXOs that should be spent together.
+#[derive(Debug, Clone, Copy)]
+pub struct Candidate {
+    /// Total value of the UTXO(s) that this [`Candidate`] represents.
+    pub value: u64,
+    /// Total weight of including this/these UTXO(s).
+    /// `txin` fields: `prevout`, `nSequence`, `scriptSigLen`, `scriptSig`, `scriptWitnessLen`,
+    /// `scriptWitness` should all be included.
+    pub weight: u32,
+    /// Total number of inputs; so we can calculate extra `varint` weight due to `vin` len changes.
+    pub input_count: usize,
+    /// Whether this [`Candidate`] contains at least one segwit spend.
+    pub is_segwit: bool,
+}
+
+impl Candidate {
+    /// Create a [`Candidate`] input that spends a single taproot keyspend output.
+    pub fn new_tr_keyspend(value: u64) -> Self {
+        let weight = TXIN_BASE_WEIGHT + TR_KEYSPEND_SATISFACTION_WEIGHT;
+        Self::new(value, weight, true)
+    }
+
+    /// Create a new [`Candidate`] that represents a single input.
+    ///
+    /// `satisfaction_weight` is the weight of `scriptSigLen + scriptSig + scriptWitnessLen +
+    /// scriptWitness`.
+    pub fn new(value: u64, satisfaction_weight: u32, is_segwit: bool) -> Candidate {
+        let weight = TXIN_BASE_WEIGHT + satisfaction_weight;
+        Candidate {
+            value,
+            weight,
+            input_count: 1,
+            is_segwit,
+        }
+    }
+
+    /// Effective value of this input candidate: `actual_value - input_weight * feerate (sats/wu)`.
+    pub fn effective_value(&self, feerate: FeeRate) -> f32 {
+        self.value as f32 - (self.weight as f32 * feerate.spwu())
+    }
+
+    /// Value per weight unit
+    pub fn value_pwu(&self) -> f32 {
+        self.value as f32 / self.weight as f32
+    }
+
+    /// The amount of *effective value* you receive per weight unit from adding this candidate as an
+    /// input.
+    pub fn effective_value_pwu(&self, feerate: FeeRate) -> f32 {
+        self.value_pwu() - feerate.spwu()
+    }
+
+    /// The (minimum) fee you'd have to pay to add this input to a transaction as implied by the
+    /// `feerate`.
+    pub fn implied_fee(&self, feerate: FeeRate) -> f32 {
+        self.weight as f32 * feerate.spwu()
+    }
+
+    /// The amount of fee you have to pay per satoshi of value you add from this input.
+    ///
+    /// The value is always positive but values below 1.0 mean the input has negative [*effective
+    /// value*](Self::effective_value) at this `feerate`.
+    pub fn fee_per_value(&self, feerate: FeeRate) -> f32 {
+        self.implied_fee(feerate) / self.value as f32
+    }
+}

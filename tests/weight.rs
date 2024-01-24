@@ -50,6 +50,7 @@ fn segwit_one_input_one_output() {
     assert_eq!(
         (coin_selector
             .implied_feerate(tx.output[0].value, Drain::none())
+            .unwrap()
             .as_sat_vb()
             * 10.0)
             .round(),
@@ -84,6 +85,7 @@ fn segwit_two_inputs_one_output() {
     assert_eq!(
         (coin_selector
             .implied_feerate(tx.output[0].value, Drain::none())
+            .unwrap()
             .as_sat_vb()
             * 10.0)
             .round(),
@@ -118,6 +120,7 @@ fn legacy_three_inputs() {
     assert_eq!(
         (coin_selector
             .implied_feerate(tx.output.iter().map(|o| o.value).sum(), Drain::none())
+            .unwrap()
             .as_sat_vb()
             * 10.0)
             .round(),

@@ -1,5 +1,7 @@
 mod common;
-use bdk_coin_select::{float::Ordf32, BnbMetric, Candidate, CoinSelector, Drain, FeeRate, Target};
+use bdk_coin_select::{
+    float::Ordf32, BnbMetric, Candidate, CoinSelector, Drain, Target, TargetFee,
+};
 #[macro_use]
 extern crate alloc;
 
@@ -44,8 +46,7 @@ impl BnbMetric for MinExcessThenWeight {
 
     fn bound(&mut self, cs: &CoinSelector<'_>) -> Option<Ordf32> {
         let mut cs = cs.clone();
-        cs.select_until_target_met(self.target, Drain::none())
-            .ok()?;
+        cs.select_until_target_met(self.target).ok()?;
         if let Some(last_index) = cs.selected_indices().iter().last().copied() {
             cs.deselect(last_index);
         }
@@ -86,8 +87,7 @@ fn bnb_finds_an_exact_solution_in_n_iter() {
     let target = Target {
         value: target,
         // we're trying to find an exact selection value so set fees to 0
-        feerate: FeeRate::zero(),
-        min_fee: 0,
+        fee: TargetFee::ZERO,
     };
 
     let solutions = cs.bnb_solutions(MinExcessThenWeight { target });
@@ -117,8 +117,7 @@ fn bnb_finds_solution_if_possible_in_n_iter() {
 
     let target = Target {
         value: target,
-        feerate: FeeRate::default_min_relay_fee(),
-        min_fee: 0,
+        fee: TargetFee::default(),
     };
 
     let solutions = cs.bnb_solutions(MinExcessThenWeight { target });
@@ -146,8 +145,7 @@ proptest! {
 
         let target = Target {
             value: target,
-            feerate: FeeRate::zero(),
-            min_fee: 0,
+            fee: TargetFee::ZERO,
         };
 
         let solutions = cs.bnb_solutions(MinExcessThenWeight { target });
@@ -193,8 +191,7 @@ proptest! {
         let target = Target {
             value: target,
             // we're trying to find an exact selection value so set fees to 0
-            feerate: FeeRate::zero(),
-            min_fee: 0
+            fee: TargetFee::ZERO,
         };
 
         let solutions = cs.bnb_solutions(MinExcessThenWeight { target });

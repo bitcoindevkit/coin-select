@@ -1,16 +1,29 @@
 #![allow(dead_code)]
 
-use std::any::type_name;
-
 use bdk_coin_select::{
     float::Ordf32, BnbMetric, Candidate, ChangePolicy, CoinSelector, Drain, DrainWeights, FeeRate,
-    NoBnbSolution, Target,
+    NoBnbSolution, Replace, Target, TargetFee,
 };
 use proptest::{
     prelude::*,
     prop_assert, prop_assert_eq,
     test_runner::{RngAlgorithm, TestRng},
 };
+use rand::seq::IteratorRandom;
+use std::any::type_name;
+
+pub fn replace(fee_strategy: impl Strategy<Value = u64>) -> impl Strategy<Value = Replace> {
+    fee_strategy.prop_map(|fee| Replace {
+        fee,
+        incremental_relay_feerate: FeeRate::DEFUALT_RBF_INCREMENTAL_RELAY,
+    })
+}
+
+pub fn maybe_replace(
+    fee_strategy: impl Strategy<Value = u64>,
+) -> impl Strategy<Value = Option<Replace>> {
+    proptest::option::of(replace(fee_strategy))
+}
 
 /// Used for constructing a proptest that compares an exhaustive search result with a bnb result
 /// with the given metric.
@@ -50,12 +63,18 @@ where
         now.elapsed().as_secs_f64(),
         exp_result_str
     );
-    // bonus check: ensure min_fee is respected
+    // bonus check: ensure replacement fee is respected
     if exp_result.is_some() {
         let selected_value = exp_selection.selected_value();
-        let drain_value = exp_selection.drain(target, change_policy).value;
+        let drain = exp_selection.drain(target, change_policy);
         let target_value = target.value;
-        assert!(selected_value - target_value - drain_value >= params.min_fee);
+        let replace_fee = params
+            .replace
+            .map(|replace| {
+                replace.min_fee_to_do_replacement(exp_selection.weight(drain.weights.output_weight))
+            })
+            .unwrap_or(0);
+        assert!(selected_value - target_value - drain.value >= replace_fee);
     }
 
     println!("\tbranch and bound:");
@@ -83,11 +102,17 @@ where
                 exp_result_str
             );
 
-            // bonus check: ensure min_fee is respected
+            // bonus check: ensure replacement fee is respected
             let selected_value = selection.selected_value();
-            let drain_value = selection.drain(target, change_policy).value;
+            let drain = selection.drain(target, change_policy);
             let target_value = target.value;
-            assert!(selected_value - target_value - drain_value >= params.min_fee);
+            let replace_fee = params
+                .replace
+                .map(|replace| {
+                    replace.min_fee_to_do_replacement(selection.weight(drain.weights.output_weight))
+                })
+                .unwrap_or(0);
+            assert!(selected_value - target_value - drain.value >= replace_fee);
         }
         _ => prop_assert!(result.is_err(), "should not find solution"),
     }
@@ -171,7 +196,7 @@ pub struct StrategyParams {
     pub n_candidates: usize,
     pub target_value: u64,
     pub base_weight: u32,
-    pub min_fee: u64,
+    pub replace: Option<Replace>,
     pub feerate: f32,
     pub feerate_lt_diff: f32,
     pub drain_weight: u32,
@@ -182,8 +207,10 @@ pub struct StrategyParams {
 impl StrategyParams {
     pub fn target(&self) -> Target {
         Target {
-            feerate: self.feerate(),
-            min_fee: self.min_fee,
+            fee: TargetFee {
+                rate: FeeRate::from_sat_per_vb(self.feerate),
+                replace: self.replace,
+            },
             value: self.target_value,
         }
     }
@@ -354,4 +381,102 @@ where
         }
         err => format!("{:?}", err),
     }
+}
+
+pub fn compare_against_benchmarks<M: BnbMetric + Clone>(
+    params: StrategyParams,
+    candidates: Vec<Candidate>,
+    change_policy: ChangePolicy,
+    mut metric: M,
+) -> Result<(), TestCaseError> {
+    println!("=======================================");
+    let start = std::time::Instant::now();
+    let mut rng = TestRng::deterministic_rng(RngAlgorithm::ChaCha);
+    let target = params.target();
+    let cs = CoinSelector::new(&candidates, params.base_weight);
+    let solutions = cs.bnb_solutions(metric.clone());
+
+    let best = solutions
+        .enumerate()
+        .filter_map(|(i, sol)| Some((i, sol?)))
+        .last();
+
+    match best {
+        Some((_i, (sol, _score))) => {
+            let mut cmp_benchmarks = vec![
+                {
+                    let mut naive_select = cs.clone();
+                    naive_select.sort_candidates_by_key(|(_, wv)| {
+                        core::cmp::Reverse(Ordf32(wv.effective_value(target.fee.rate)))
+                    });
+                    // we filter out failing onces below
+                    let _ = naive_select.select_until_target_met(target);
+                    naive_select
+                },
+                {
+                    let mut all_selected = cs.clone();
+                    all_selected.select_all();
+                    all_selected
+                },
+                {
+                    let mut all_effective_selected = cs.clone();
+                    all_effective_selected.select_all_effective(target.fee.rate);
+                    all_effective_selected
+                },
+            ];
+
+            // add some random selections -- technically it's possible that one of these is better but it's very unlikely if our algorithm is working correctly.
+            cmp_benchmarks.extend((0..10).map(|_| {
+                randomly_satisfy_target(&cs, target, change_policy, &mut rng, metric.clone())
+            }));
+
+            let cmp_benchmarks = cmp_benchmarks
+                .into_iter()
+                .filter(|cs| cs.is_target_met(target));
+            let sol_score = metric.score(&sol);
+
+            for (_bench_id, mut bench) in cmp_benchmarks.enumerate() {
+                let bench_score = metric.score(&bench);
+                if sol_score > bench_score {
+                    dbg!(_bench_id);
+                    println!("bnb solution: {}", sol);
+                    bench.sort_candidates_by_descending_value_pwu();
+                    println!("found better: {}", bench);
+                }
+                prop_assert!(sol_score <= bench_score);
+            }
+        }
+        None => {
+            prop_assert!(!cs.is_selection_possible(target));
+        }
+    }
+
+    dbg!(start.elapsed());
+    Ok(())
+}
+
+#[allow(unused)]
+fn randomly_satisfy_target<'a>(
+    cs: &CoinSelector<'a>,
+    target: Target,
+    change_policy: ChangePolicy,
+    rng: &mut impl RngCore,
+    mut metric: impl BnbMetric,
+) -> CoinSelector<'a> {
+    let mut cs = cs.clone();
+
+    let mut last_score: Option<Ordf32> = None;
+    while let Some(next) = cs.unselected_indices().choose(rng) {
+        cs.select(next);
+        if cs.is_target_met(target) {
+            let curr_score = metric.score(&cs);
+            if let Some(last_score) = last_score {
+                if curr_score.is_none() || curr_score.unwrap() > last_score {
+                    break;
+                }
+            }
+            last_score = curr_score;
+        }
+    }
+    cs
 }

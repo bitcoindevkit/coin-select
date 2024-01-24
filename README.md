@@ -76,7 +76,6 @@ output(s). The other is the weight of spending the drain output later on (the in
 use std::str::FromStr;
 use bdk_coin_select::{CoinSelector, Candidate, DrainWeights, TXIN_BASE_WEIGHT, ChangePolicy, TR_KEYSPEND_TXIN_WEIGHT};
 use bitcoin::{Address, Network, Transaction, TxIn, TxOut};
-const TR_SATISFACTION_WEIGHT: u32 = 66;
 let base_tx = Transaction {
     input: vec![],
     output: vec![/* include your recipient outputs here */],
@@ -129,19 +128,37 @@ Built-in metrics are provided in the [`metrics`] submodule. Currently, only the
 [`LowestFee`](metrics::LowestFee) metric is considered stable.
 
 ```rust
-use bdk_coin_select::{ Candidate, CoinSelector, FeeRate, Target, ChangePolicy };
+use bdk_coin_select::{ Candidate, CoinSelector, FeeRate, Target, TargetFee, ChangePolicy, TR_KEYSPEND_TXIN_WEIGHT };
 use bdk_coin_select::metrics::LowestFee;
-let candidates = [];
+let candidates = [
+    Candidate {
+        input_count: 1,
+        value: 400_000,
+        weight: TR_KEYSPEND_TXIN_WEIGHT,
+        is_segwit: true
+    },
+    Candidate {
+        input_count: 1,
+        value: 200_000,
+        weight: TR_KEYSPEND_TXIN_WEIGHT,
+        is_segwit: true
+    },
+    Candidate {
+        input_count: 1,
+        value: 11_000,
+        weight: TR_KEYSPEND_TXIN_WEIGHT,
+        is_segwit: true
+    }
+];
 let base_weight = 0;
 let drain_weights = bdk_coin_select::DrainWeights::default();
 let dust_limit = 0;
-let long_term_feerate = FeeRate::default_min_relay_fee();
+let long_term_feerate = FeeRate::from_sat_per_vb(10.0);
 
 let mut coin_selector = CoinSelector::new(&candidates, base_weight);
 
 let target = Target {
-    feerate: FeeRate::default_min_relay_fee(),
-    min_fee: 0,
+    fee: TargetFee::from_feerate(FeeRate::from_sat_per_vb(15.0)),
     value: 210_000,
 };
 
@@ -151,7 +168,7 @@ let target = Target {
 let change_policy = ChangePolicy::min_value_and_waste(
     drain_weights,
     dust_limit,
-    target.feerate,
+    target.fee.rate,
     long_term_feerate,
 );
 
@@ -166,7 +183,11 @@ let metric = LowestFee {
 
 // We run the branch and bound algorithm with a max round limit of 100,000.
 match coin_selector.run_bnb(metric, 100_000) {
-    Err(err) => println!("failed to find a solution: {}", err),
+    Err(err) => {
+        println!("failed to find a solution: {}", err);
+        // fall back to naive selection
+        coin_selector.select_until_target_met(target).expect("a selection was impossible!");
+    }
     Ok(score) => {
         println!("we found a solution with score {}", score);
 
@@ -179,6 +200,7 @@ match coin_selector.run_bnb(metric, 100_000) {
         println!("We are including a change output of {} value (0 means not change)", change.value);
     }
 };
+
 ```
 
 ## Finalizing a Selection
@@ -195,7 +217,7 @@ match coin_selector.run_bnb(metric, 100_000) {
 use bdk_coin_select::{CoinSelector, Candidate, DrainWeights, Target, ChangePolicy, TR_KEYSPEND_TXIN_WEIGHT, Drain};
 use bitcoin::{Amount, TxOut, Address};
 let base_weight = 0_u32;
-let drain_weights = DrainWeights::new_tr_keyspend();
+let drain_weights = DrainWeights::TR_KEYSPEND;
 use core::str::FromStr;
 
 // A random target, as an example.
@@ -222,7 +244,7 @@ let candidate_txouts = vec![
         script_pubkey: Address::from_str("bc1p0d0rhyynq0awa9m8cqrcr8f5nxqx3aw29w4ru5u9my3h0sfygnzs9khxz8").unwrap().payload.script_pubkey()
     }
 ];
-// We transform the candidate txouts into something `CoinSelector` can 
+// We transform the candidate txouts into something `CoinSelector` can
 // understand.
 let candidates = candidate_txouts
     .iter()
@@ -236,7 +258,7 @@ let candidates = candidate_txouts
 
 let mut selector = CoinSelector::new(&candidates, base_weight);
 selector
-    .select_until_target_met(target,  Drain::none())
+    .select_until_target_met(target)
     .expect("we've got enough coins");
 
 // Get a list of coins that are selected.
@@ -256,11 +278,5 @@ if drain.is_some() {
 
 # Minimum Supported Rust Version (MSRV)
 
-This library is tested to compile on 1.54
+This library is compiles on rust v1.54 and above
 
-To build with the MSRV, you will need to pin the following dependencies:
-
-```shell
-# tempfile 3.7.0 has MSRV 1.63.0+
-cargo update -p tempfile --precise "3.6.0"
-```

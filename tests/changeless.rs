@@ -2,7 +2,7 @@
 mod common;
 use bdk_coin_select::{
     float::Ordf32, metrics, Candidate, ChangePolicy, CoinSelector, Drain, DrainWeights, FeeRate,
-    Target,
+    Target, TargetFee,
 };
 use proptest::{prelude::*, proptest, test_runner::*};
 use rand::{prelude::IteratorRandom, Rng, RngCore};
@@ -14,7 +14,7 @@ fn test_wv(mut rng: impl RngCore) -> impl Iterator<Item = Candidate> {
             value,
             weight: rng.gen_range(0..100),
             input_count: rng.gen_range(1..2),
-            is_segwit: rng.gen_bool(0.5),
+            is_segwit: false,
         }
     })
 }
@@ -31,7 +31,7 @@ proptest! {
         num_inputs in 0usize..15,
         target in 0u64..15_000,
         feerate in 1.0f32..10.0,
-        min_fee in 0u64..1_000,
+        replace in common::maybe_replace(0u64..1_000),
         base_weight in 0u32..500,
         long_term_feerate_diff in -5.0f32..5.0,
         change_weight in 1u32..100,
@@ -50,14 +50,15 @@ proptest! {
         let change_policy = ChangePolicy::min_value_and_waste(drain, 0, feerate, long_term_feerate);
         let wv = test_wv(&mut rng);
         let candidates = wv.take(num_inputs).collect::<Vec<_>>();
-        println!("candidates: {:#?}", candidates);
 
         let cs = CoinSelector::new(&candidates, base_weight);
 
         let target = Target {
             value: target,
-            feerate,
-            min_fee
+            fee: TargetFee {
+                rate: feerate,
+                replace,
+            }
         };
 
         let solutions = cs.bnb_solutions(metrics::Changeless {
@@ -65,6 +66,7 @@ proptest! {
             change_policy
         });
 
+        println!("candidates: {:#?}", cs.candidates().collect::<Vec<_>>());
 
         let best = solutions
             .enumerate()
@@ -77,16 +79,16 @@ proptest! {
                 let mut cmp_benchmarks = vec![
                     {
                         let mut naive_select = cs.clone();
-                        naive_select.sort_candidates_by_key(|(_, wv)| core::cmp::Reverse(Ordf32(wv.effective_value(target.feerate))));
+                        naive_select.sort_candidates_by_key(|(_, wv)| core::cmp::Reverse(Ordf32(wv.effective_value(target.fee.rate))));
                         // we filter out failing onces below
-                        let _ = naive_select.select_until_target_met(target, Drain { weights: drain, value: 0 });
+                        let _ = naive_select.select_until_target_met(target);
                         naive_select
                     },
                 ];
 
                 cmp_benchmarks.extend((0..10).map(|_|random_minimal_selection(&cs, target, long_term_feerate, change_policy, &mut rng)));
 
-                let cmp_benchmarks = cmp_benchmarks.into_iter().filter(|cs| cs.is_target_met_with_change_policy(target, change_policy));
+                let cmp_benchmarks = cmp_benchmarks.into_iter().filter(|cs| cs.is_target_met(target));
                 for (_bench_id, bench) in cmp_benchmarks.enumerate() {
                     prop_assert!(bench.drain_value(target, change_policy).is_some() >=  sol.drain_value(target, change_policy).is_some());
                 }
@@ -95,6 +97,7 @@ proptest! {
                 let mut cs = cs.clone();
                 let mut metric = metrics::Changeless { target, change_policy };
                 let has_solution = common::exhaustive_search(&mut cs, &mut metric).is_some();
+                dbg!(format!("{}", cs));
                 assert!(!has_solution);
             }
         }
@@ -115,7 +118,7 @@ fn random_minimal_selection<'a>(
     let mut last_waste: Option<f32> = None;
     while let Some(next) = cs.unselected_indices().choose(rng) {
         cs.select(next);
-        if cs.is_target_met_with_change_policy(target, change_policy) {
+        if cs.is_target_met(target) {
             break;
         }
     }

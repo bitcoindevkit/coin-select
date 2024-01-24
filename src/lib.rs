@@ -24,6 +24,10 @@ mod feerate;
 pub use feerate::*;
 mod change_policy;
 pub use change_policy::*;
+mod target;
+pub use target::*;
+mod drain;
+pub use drain::*;
 
 /// Txin "base" fields include `outpoint` (32+4) and `nSequence` (4) and 1 byte for the scriptSig
 /// length.
