@@ -1,9 +1,7 @@
 use super::*;
 #[allow(unused)] // some bug in <= 1.48.0 sees this as unused when it isn't
 use crate::float::FloatExt;
-use crate::{
-    bnb::BnbMetric, change_policy::ChangePolicy, float::Ordf32, FeeRate, Target, TargetFee,
-};
+use crate::{bnb::BnbMetric, change_policy::ChangePolicy, float::Ordf32, FeeRate, Target};
 use alloc::{borrow::Cow, collections::BTreeSet, vec::Vec};
 
 /// [`CoinSelector`] selects/deselects coins from a set of canididate coins.
@@ -15,7 +13,6 @@ use alloc::{borrow::Cow, collections::BTreeSet, vec::Vec};
 /// [`bnb_solutions`]: CoinSelector::bnb_solutions
 #[derive(Debug, Clone)]
 pub struct CoinSelector<'a> {
-    base_weight: u32,
     candidates: &'a [Candidate],
     selected: Cow<'a, BTreeSet<usize>>,
     banned: Cow<'a, BTreeSet<usize>>,
@@ -34,42 +31,13 @@ impl<'a> CoinSelector<'a> {
     ///
     /// Note that methods in `CoinSelector` will refer to inputs by the index in the `candidates`
     /// slice you pass in.
-    pub fn new(candidates: &'a [Candidate], base_weight: u32) -> Self {
+    pub fn new(candidates: &'a [Candidate]) -> Self {
         Self {
-            base_weight,
             candidates,
             selected: Cow::Owned(Default::default()),
             banned: Cow::Owned(Default::default()),
             candidate_order: Cow::Owned((0..candidates.len()).collect()),
         }
-    }
-
-    /// Creates a new coin selector from some candidate inputs and a list of `output_weights`.
-    ///
-    /// This is a convenience method to calculate the `base_weight` from a set of recipient output
-    /// weights. This is equivalent to calculating the `base_weight` yourself and calling
-    /// [`CoinSelector::new`].
-    pub fn fund_outputs(
-        candidates: &'a [Candidate],
-        output_weights: impl IntoIterator<Item = u32>,
-    ) -> Self {
-        let (output_count, output_weight_total) = output_weights
-            .into_iter()
-            .fold((0_usize, 0_u32), |(n, w), a| (n + 1, w + a));
-
-        let base_weight = (4 /* nVersion */
-            + 4 /* nLockTime */
-            + varint_size(0) /* inputs varint */
-            + varint_size(output_count)/* outputs varint */)
-            * 4
-            + output_weight_total;
-
-        Self::new(candidates, base_weight)
-    }
-
-    /// The weight of the transaction without any inputs and without a change output.
-    pub fn base_weight(&self) -> u32 {
-        self.base_weight
     }
 
     /// Iterate over all the candidates in their currently sorted order. Each item has the original
@@ -166,10 +134,9 @@ impl<'a> CoinSelector<'a> {
     pub fn input_weight(&self) -> u32 {
         let is_segwit_tx = self.selected().any(|(_, wv)| wv.is_segwit);
         let witness_header_extra_weight = is_segwit_tx as u32 * 2;
-        let vin_count_varint_extra_weight = {
-            let input_count = self.selected().map(|(_, wv)| wv.input_count).sum::<usize>();
-            (varint_size(input_count) - 1) * 4
-        };
+
+        let input_count = self.selected().map(|(_, wv)| wv.input_count).sum::<usize>();
+        let input_varint_weight = varint_size(input_count) * 4;
 
         let selected_weight: u32 = self
             .selected()
@@ -184,7 +151,7 @@ impl<'a> CoinSelector<'a> {
             })
             .sum();
 
-        selected_weight + witness_header_extra_weight + vin_count_varint_extra_weight
+        input_varint_weight + selected_weight + witness_header_extra_weight
     }
 
     /// Absolute value sum of all selected inputs.
@@ -195,26 +162,41 @@ impl<'a> CoinSelector<'a> {
             .sum()
     }
 
-    /// Current weight of template tx + selected inputs.
-    pub fn weight(&self, drain_weight: u32) -> u32 {
-        self.base_weight + self.input_weight() + drain_weight
+    /// Current weight of transaction implied by the selection.
+    ///
+    /// If you don't have any drain outputs (only target outputs) just set drain_weights tio [`DrainWeights::NONE`].
+    pub fn weight(&self, target_ouputs: TargetOutputs, drain_weight: DrainWeights) -> u32 {
+        TX_FIXED_FIELD_WEIGHT
+            + self.input_weight()
+            + target_ouputs.output_weight_with_drain(drain_weight)
     }
 
     /// How much the current selection overshoots the value needed to achieve `target`.
     ///
-    /// In order for the resulting transaction to be valid this must be 0.
+    /// In order for the resulting transaction to be valid this must be 0 or above. If it's above 0
+    /// this means the transaction will overpay for what it needs to reach `target`.
     pub fn excess(&self, target: Target, drain: Drain) -> i64 {
         self.rate_excess(target, drain)
             .min(self.replacement_excess(target, drain))
+    }
+
+    /// How much extra value needs to be selected to reach the target.
+    pub fn missing(&self, target: Target) -> u64 {
+        let excess = self.excess(target, Drain::NONE);
+        if excess < 0 {
+            excess.unsigned_abs()
+        } else {
+            0
+        }
     }
 
     /// How much the current selection overshoots the value need to satisfy `target.fee.rate` and
     /// `target.value` (while ignoring `target.min_fee`).
     pub fn rate_excess(&self, target: Target, drain: Drain) -> i64 {
         self.selected_value() as i64
-            - target.value as i64
+            - target.value() as i64
             - drain.value as i64
-            - self.implied_fee_from_feerate(target.fee.rate, drain.weights.output_weight) as i64
+            - self.implied_fee_from_feerate(target, drain.weights) as i64
     }
 
     /// How much the current selection overshoots the value needed to satisfy RBF's rule 4.
@@ -222,21 +204,22 @@ impl<'a> CoinSelector<'a> {
         let mut replacement_excess_needed = 0;
         if let Some(replace) = target.fee.replace {
             replacement_excess_needed =
-                replace.min_fee_to_do_replacement(self.weight(drain.weights.output_weight))
+                replace.min_fee_to_do_replacement(self.weight(target.outputs, drain.weights))
         }
         self.selected_value() as i64
-            - target.value as i64
+            - target.value() as i64
             - drain.value as i64
             - replacement_excess_needed as i64
     }
 
     /// The feerate the transaction would have if we were to use this selection of inputs to achieve
-    /// the `target_value`.
+    /// the `target`'s value and weight. It is essentially telling you what target feerate you currently have.
     ///
     /// Returns `None` if the feerate would be negative or infinity.
-    pub fn implied_feerate(&self, target_value: u64, drain: Drain) -> Option<FeeRate> {
-        let numerator = self.selected_value() as i64 - target_value as i64 - drain.value as i64;
-        let denom = self.weight(drain.weights.output_weight);
+    pub fn implied_feerate(&self, target_outputs: TargetOutputs, drain: Drain) -> Option<FeeRate> {
+        let numerator =
+            self.selected_value() as i64 - target_outputs.value_sum as i64 - drain.value as i64;
+        let denom = self.weight(target_outputs, drain.weights);
         if numerator < 0 || denom == 0 {
             return None;
         }
@@ -246,22 +229,19 @@ impl<'a> CoinSelector<'a> {
     /// The fee the current selection and `drain_weight` should pay to satisfy `target_fee`.
     ///
     /// `drain_weight` can be 0 to indicate no draining output
-    pub fn implied_fee(&self, target_fee: TargetFee, drain_weight: u32) -> u64 {
-        let mut implied_fee = self.implied_fee_from_feerate(target_fee.rate, drain_weight);
+    pub fn implied_fee(&self, target: Target, drain_weights: DrainWeights) -> u64 {
+        let mut implied_fee = self.implied_fee_from_feerate(target, drain_weights);
 
-        if let Some(replace) = target_fee.replace {
-            implied_fee = implied_fee.max(self.implied_fee_from_replace(replace, drain_weight));
+        if let Some(replace) = target.fee.replace {
+            implied_fee =
+                replace.min_fee_to_do_replacement(self.weight(target.outputs, drain_weights));
         }
 
         implied_fee
     }
 
-    fn implied_fee_from_replace(&self, replace: Replace, drain_weight: u32) -> u64 {
-        replace.min_fee_to_do_replacement(self.weight(drain_weight))
-    }
-
-    fn implied_fee_from_feerate(&self, feerate: FeeRate, drain_weight: u32) -> u64 {
-        (self.weight(drain_weight) as f32 * feerate.spwu()).ceil() as u64
+    fn implied_fee_from_feerate(&self, target: Target, drain_weights: DrainWeights) -> u64 {
+        (self.weight(target.outputs, drain_weights) as f32 * target.fee.rate.spwu()).ceil() as u64
     }
 
     /// The actual fee the selection would pay if it was used in a transaction that had
@@ -348,8 +328,10 @@ impl<'a> CoinSelector<'a> {
             excess_waste *= excess_discount.max(0.0).min(1.0);
             waste += excess_waste;
         } else {
-            waste += drain.weights.output_weight as f32 * target.fee.rate.spwu()
-                + drain.weights.spend_weight as f32 * long_term_feerate.spwu();
+            waste +=
+                drain
+                    .weights
+                    .waste(target.fee.rate, long_term_feerate, target.outputs.n_outputs);
         }
 
         waste
@@ -468,7 +450,7 @@ impl<'a> CoinSelector<'a> {
                 weights: change_policy.drain_weights,
                 value,
             },
-            None => Drain::none(),
+            None => Drain::NONE,
         }
     }
 

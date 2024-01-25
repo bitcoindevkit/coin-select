@@ -39,7 +39,11 @@ impl ChangePolicy {
     ) -> Self {
         // The output waste of a changeless solution is the excess.
         let waste_with_change = drain_weights
-            .waste(target_feerate, long_term_feerate)
+            .waste(
+                target_feerate,
+                long_term_feerate,
+                0, /* ignore varint cost for now */
+            )
             .ceil() as u64;
 
         Self {
