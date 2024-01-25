@@ -35,7 +35,7 @@ impl BnbMetric for LowestFee {
                 fee_for_the_tx > 0,
                 "must not be called unless selection has met target"
             );
-            // Why `spend_fee` rounds up here. We could use floats but I felt it was just better to
+            // `spend_fee` rounds up here. We could use floats but I felt it was just better to
             // accept the extra 1 sat penality to having a change output
             let fee_for_spending_drain = drain.weights.spend_fee(self.long_term_feerate);
             fee_for_the_tx as u64 + fee_for_spending_drain
