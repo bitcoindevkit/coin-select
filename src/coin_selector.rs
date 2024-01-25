@@ -1,7 +1,7 @@
 use super::*;
 #[allow(unused)] // some bug in <= 1.48.0 sees this as unused when it isn't
 use crate::float::FloatExt;
-use crate::{bnb::BnbMetric, change_policy::ChangePolicy, float::Ordf32, FeeRate, Target};
+use crate::{bnb::BnbMetric, float::Ordf32, ChangePolicy, FeeRate, Target};
 use alloc::{borrow::Cow, collections::BTreeSet, vec::Vec};
 
 /// [`CoinSelector`] selects/deselects coins from a set of canididate coins.

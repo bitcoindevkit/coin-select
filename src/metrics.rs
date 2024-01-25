@@ -1,8 +1,6 @@
 //! Branch and bound metrics that can be passed to [`CoinSelector::bnb_solutions`] or
 //! [`CoinSelector::run_bnb`].
-use crate::{
-    bnb::BnbMetric, change_policy::ChangePolicy, float::Ordf32, CoinSelector, Drain, Target,
-};
+use crate::{bnb::BnbMetric, float::Ordf32, ChangePolicy, CoinSelector, Drain, Target};
 mod lowest_fee;
 pub use lowest_fee::*;
 mod changeless;

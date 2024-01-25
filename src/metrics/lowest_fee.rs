@@ -1,6 +1,4 @@
-use crate::{
-    change_policy::ChangePolicy, float::Ordf32, BnbMetric, CoinSelector, Drain, FeeRate, Target,
-};
+use crate::{float::Ordf32, BnbMetric, ChangePolicy, CoinSelector, Drain, FeeRate, Target};
 
 /// Metric that aims to minimize transaction fees. The future fee for spending the change output is
 /// included in this calculation.

@@ -1,5 +1,5 @@
 use super::change_lower_bound;
-use crate::{bnb::BnbMetric, change_policy::ChangePolicy, float::Ordf32, CoinSelector, Target};
+use crate::{bnb::BnbMetric, float::Ordf32, ChangePolicy, CoinSelector, Target};
 
 #[derive(Clone, Debug)]
 /// Metric for finding changeless solutions only.
