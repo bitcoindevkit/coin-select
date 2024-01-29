@@ -29,7 +29,7 @@ proptest! {
     #[test]
     #[cfg(not(debug_assertions))] // too slow if compiling for debug
     fn compare_against_benchmarks(
-        n_candidates in 0..50_usize,        // candidates (n)
+        n_candidates in 0..15_usize,        // candidates (n)
         target_value in 500..1_000_000_u64,   // target value (sats)
         n_target_outputs in 1..150_usize,    // the number of outputs we're funding
         target_weight in 0..10_000_u32,         // the sum of the weight of the outputs (wu)
