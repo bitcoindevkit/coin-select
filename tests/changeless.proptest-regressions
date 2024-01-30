@@ -5,3 +5,5 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc b03fc0267d15cf4455c7f00feed18d1ba82a783a38bf689dacdd572356013877 # shrinks to num_inputs = 7, target = 1277, feerate = 1.0, min_fee = 177, base_weight = 0, long_term_feerate_diff = 0.0, change_weight = 1, change_spend_weight = 1
+cc 2ba2cfa2412c0f3c9de4eb35caeefa1a086797f5c3f5fc0528396cc90a85d993 # shrinks to num_inputs = 5, target = 908, feerate = 7.823237, replace = None, base_weight = 222, long_term_feerate_diff = 2.4063222, change_weight = 14, change_spend_weight = 14
+cc fc2f2211d811690b78ca4206be874e5c3e99727626f79306bbdd25d59df9c27b # shrinks to num_inputs = 10, target = 3821, feerate = 4.104783, replace = None, base_weight = 321, long_term_feerate_diff = 2.7914581, change_weight = 1, change_spend_weight = 1

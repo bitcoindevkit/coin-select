@@ -49,7 +49,7 @@ impl BnbMetric for Waste {
         //
         // Don't be afraid. This function is a "heuristic" lower bound. It doesn't need to be super
         // duper correct. In testing it seems to come up with pretty good results pretty fast.
-        let rate_diff = self.target.feerate.spwu() - self.long_term_feerate.spwu();
+        let rate_diff = self.target.fee.rate.spwu() - self.long_term_feerate.spwu();
         // whether from this coin selection it's possible to avoid change
         let change_lower_bound = change_lower_bound(cs, self.target, self.change_policy);
         const IGNORE_EXCESS: f32 = 0.0;
@@ -80,7 +80,7 @@ impl BnbMetric for Waste {
                         .select_iter()
                         .rev()
                         .take_while(|(cs, _, wv)| {
-                            wv.effective_value(self.target.feerate) < 0.0
+                            wv.effective_value(self.target.fee.rate) < 0.0
                                 && cs.is_target_met(self.target)
                         })
                         .last();
@@ -88,7 +88,7 @@ impl BnbMetric for Waste {
                     if let Some((cs, _, _)) = selection_with_as_much_negative_ev_as_possible {
                         let can_do_better_by_slurping =
                             cs.unselected().next_back().and_then(|(_, wv)| {
-                                if wv.effective_value(self.target.feerate) < 0.0 {
+                                if wv.effective_value(self.target.fee.rate) < 0.0 {
                                     Some(wv)
                                 } else {
                                     None
@@ -100,7 +100,7 @@ impl BnbMetric for Waste {
                                 // the hopes of getting rid of the change output
                                 let value_to_slurp = -cs.rate_excess(self.target, Drain::none());
                                 let weight_to_extinguish_excess =
-                                    slurp_wv(finishing_input, value_to_slurp, self.target.feerate);
+                                    slurp_wv(finishing_input, value_to_slurp, self.target.fee.rate);
                                 let waste_to_extinguish_excess =
                                     weight_to_extinguish_excess * rate_diff;
                                 // return: waste after excess reduction
@@ -147,12 +147,12 @@ impl BnbMetric for Waste {
                     // satisfying absolute and feerate constraints requires different calculations so we do them
                     // both independently and find which requires the most weight of the next input.
                     let remaining_rate = cs.rate_excess(self.target, change_lower_bound);
-                    let remaining_abs = cs.absolute_excess(self.target, change_lower_bound);
+                    let remaining_abs = cs.replacement_excess(self.target, change_lower_bound);
 
                     let weight_to_satisfy_abs = remaining_abs.min(0) as f32 / to_slurp.value_pwu();
 
                     let weight_to_satisfy_rate =
-                        slurp_wv(to_slurp, remaining_rate.min(0), self.target.feerate);
+                        slurp_wv(to_slurp, remaining_rate.min(0), self.target.fee.rate);
 
                     let weight_to_satisfy = weight_to_satisfy_abs.max(weight_to_satisfy_rate);
                     debug_assert!(weight_to_satisfy <= to_slurp.weight as f32);
@@ -160,7 +160,7 @@ impl BnbMetric for Waste {
                 };
                 let weight_lower_bound = cs.input_weight() as f32 + ideal_next_weight;
                 let mut waste = weight_lower_bound * rate_diff;
-                waste += change_lower_bound.waste(self.target.feerate, self.long_term_feerate);
+                waste += change_lower_bound.waste(self.target.fee.rate, self.long_term_feerate);
 
                 Some(Ordf32(waste))
             }
@@ -175,7 +175,7 @@ impl BnbMetric for Waste {
             let mut lower_bound = {
                 let mut cs = cs.clone();
                 // ... but first check that by selecting all effective we can actually reach target
-                cs.select_all_effective(self.target.feerate);
+                cs.select_all_effective(self.target.fee.rate);
                 if !cs.is_target_met(self.target) {
                     return None;
                 }
@@ -200,7 +200,7 @@ impl BnbMetric for Waste {
                     .select_iter()
                     .rev()
                     .take_while(|(cs, _, wv)| {
-                        wv.effective_value(self.target.feerate) < 0.0
+                        wv.effective_value(self.target.fee.rate) < 0.0
                             || cs.drain_value(self.target, self.change_policy).is_none()
                     })
                     .last();

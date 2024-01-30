@@ -7,6 +7,16 @@ use core::ops::{Add, Sub};
 pub struct FeeRate(Ordf32);
 
 impl FeeRate {
+    /// A feerate of zero
+    pub const ZERO: Self = Self(Ordf32(0.0));
+    /// The default minimum relay fee that bitcoin core uses (1 sat per vbyte). The feerate your transaction has must
+    /// be at least this to be forwarded by most nodes on the network.
+    pub const DEFAULT_MIN_RELAY: Self = Self(Ordf32(0.25));
+    /// The defualt incremental relay fee that bitcoin core uses (1 sat per vbyte). You must pay
+    /// this fee over the fee of the transaction(s) you are replacing by through the replace-by-fee
+    /// mechanism. This feerate is applied to the transaction that is replacing the old
+    /// transactions.
+    pub const DEFUALT_RBF_INCREMENTAL_RELAY: Self = Self(Ordf32(0.25));
     /// Create a new instance checking the value provided
     ///
     /// ## Panics
@@ -28,11 +38,6 @@ impl FeeRate {
         Self::new_checked(btc_per_kvb * 1e5 / 4.0)
     }
 
-    /// A feerate of zero
-    pub fn zero() -> Self {
-        Self(Ordf32(0.0))
-    }
-
     /// Create a new instance of [`FeeRate`] given a float fee rate in satoshi/vbyte
     ///
     /// ## Panics
@@ -43,6 +48,7 @@ impl FeeRate {
     }
 
     /// Create a new [`FeeRate`] with the default min relay fee value
+    #[deprecated(note = "use the DEFAULT_MIN_RELAY constant instead")]
     pub const fn default_min_relay_fee() -> Self {
         Self(Ordf32(0.25))
     }

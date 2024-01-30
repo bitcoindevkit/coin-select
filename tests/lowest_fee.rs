@@ -2,8 +2,10 @@
 
 mod common;
 use bdk_coin_select::metrics::{Changeless, LowestFee};
-use bdk_coin_select::{BnbMetric, Candidate, CoinSelector};
-use bdk_coin_select::{ChangePolicy, Drain, DrainWeights, FeeRate, Target};
+use bdk_coin_select::{
+    BnbMetric, Candidate, ChangePolicy, CoinSelector, Drain, DrainWeights, FeeRate, Replace,
+    Target, TargetFee,
+};
 use proptest::prelude::*;
 
 proptest! {
@@ -17,14 +19,14 @@ proptest! {
         n_candidates in 1..20_usize,        // candidates (n)
         target_value in 500..500_000_u64,   // target value (sats)
         base_weight in 0..1000_u32,         // base weight (wu)
-        min_fee in 0..1000_u64,             // min fee (sats)
+        replace in common::maybe_replace(0u64..1_000),
         feerate in 1.0..100.0_f32,          // feerate (sats/vb)
         feerate_lt_diff in -5.0..50.0_f32,  // longterm feerate diff (sats/vb)
         drain_weight in 100..=500_u32,      // drain weight (wu)
         drain_spend_weight in 1..=2000_u32, // drain spend weight (wu)
         drain_dust in 100..=1000_u64,       // drain dust (sats)
     ) {
-        let params = common::StrategyParams { n_candidates, target_value, base_weight, min_fee, feerate, feerate_lt_diff, drain_weight, drain_spend_weight, drain_dust };
+        let params = common::StrategyParams { n_candidates, target_value, base_weight, replace, feerate, feerate_lt_diff, drain_weight, drain_spend_weight, drain_dust };
         let candidates = common::gen_candidates(params.n_candidates);
         let change_policy = ChangePolicy::min_value(params.drain_weights(), params.drain_dust);
         let metric = LowestFee { target: params.target(), long_term_feerate: params.long_term_feerate(), change_policy };
@@ -37,14 +39,14 @@ proptest! {
         n_candidates in 0..15_usize,        // candidates (n)
         target_value in 500..500_000_u64,   // target value (sats)
         base_weight in 0..1000_u32,         // base weight (wu)
-        min_fee in 0..1000_u64,             // min fee (sats)
+        replace in common::maybe_replace(0u64..1_000),
         feerate in 1.0..100.0_f32,          // feerate (sats/vb)
         feerate_lt_diff in -5.0..50.0_f32,  // longterm feerate diff (sats/vb)
         drain_weight in 100..=500_u32,      // drain weight (wu)
         drain_spend_weight in 1..=1000_u32, // drain spend weight (wu)
         drain_dust in 100..=1000_u64,       // drain dust (sats)
     ) {
-        let params = common::StrategyParams { n_candidates, target_value, base_weight, min_fee, feerate, feerate_lt_diff, drain_weight, drain_spend_weight, drain_dust };
+        let params = common::StrategyParams { n_candidates, target_value, base_weight, replace, feerate, feerate_lt_diff, drain_weight, drain_spend_weight, drain_dust };
         let candidates = common::gen_candidates(params.n_candidates);
         let change_policy = ChangePolicy::min_value(params.drain_weights(), params.drain_dust);
         let metric = LowestFee { target: params.target(), long_term_feerate: params.long_term_feerate(), change_policy };
@@ -57,7 +59,7 @@ proptest! {
         n_candidates in 30..300_usize,
         target_value in 50_000..500_000_u64,   // target value (sats)
         base_weight in 0..641_u32,          // base weight (wu)
-        min_fee in 0..1_000_u64,            // min fee (sats)
+        replace in common::maybe_replace(0u64..1_000),
         feerate in 1.0..10.0_f32,          // feerate (sats/vb)
         feerate_lt_diff in -5.0..5.0_f32,  // longterm feerate diff (sats/vb)
         drain_weight in 100..=500_u32,      // drain weight (wu)
@@ -70,7 +72,7 @@ proptest! {
             n_candidates,
             target_value,
             base_weight,
-            min_fee,
+            replace,
             feerate,
             feerate_lt_diff,
             drain_weight,
@@ -105,6 +107,25 @@ proptest! {
         println!("\t\tscore={} rounds={}", score, rounds);
         prop_assert!(rounds <= params.n_candidates);
     }
+
+    #[test]
+    #[cfg(not(debug_assertions))] // too slow if compiling for debug
+    fn compare_against_benchmarks(n_candidates in 0..50_usize,        // candidates (n)
+        target_value in 500..1_000_000_u64,   // target value (sats)
+        base_weight in 0..1000_u32,         // base weight (wu)
+        replace in common::maybe_replace(0u64..1_000),
+        feerate in 1.0..100.0_f32,          // feerate (sats/vb)
+        feerate_lt_diff in -5.0..50.0_f32,  // longterm feerate diff (sats/vb)
+        drain_weight in 100..=500_u32,      // drain weight (wu)
+        drain_spend_weight in 1..=1000_u32, // drain spend weight (wu)
+        drain_dust in 100..=1000_u64,       // drain dust (sats)
+    ) {
+        let params = common::StrategyParams { n_candidates, target_value, base_weight, replace, feerate, feerate_lt_diff, drain_weight, drain_spend_weight, drain_dust };
+        let candidates = common::gen_candidates(params.n_candidates);
+        let change_policy = ChangePolicy::min_value(params.drain_weights(), params.drain_dust);
+        let metric = LowestFee { target: params.target(), long_term_feerate: params.long_term_feerate(), change_policy };
+        common::compare_against_benchmarks(params, candidates, change_policy, metric)?;
+    }
 }
 
 /// We combine the `LowestFee` and `Changeless` metrics to derive a `ChangelessLowestFee` metric.
@@ -114,7 +135,7 @@ fn combined_changeless_metric() {
         n_candidates: 100,
         target_value: 100_000,
         base_weight: 1000,
-        min_fee: 0,
+        replace: None,
         feerate: 5.0,
         feerate_lt_diff: -4.0,
         drain_weight: 200,
@@ -158,8 +179,7 @@ fn combined_changeless_metric() {
 #[test]
 fn adding_another_input_to_remove_change() {
     let target = Target {
-        feerate: FeeRate::from_sat_per_vb(1.0),
-        min_fee: 0,
+        fee: TargetFee::default(),
         value: 99_870,
     };
 

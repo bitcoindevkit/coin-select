@@ -4,7 +4,7 @@ mod common;
 
 use bdk_coin_select::{
     float::Ordf32, metrics::Waste, Candidate, ChangePolicy, CoinSelector, Drain, DrainWeights,
-    FeeRate, Target,
+    FeeRate, Target, TargetFee,
 };
 use proptest::{
     prelude::*,
@@ -17,7 +17,6 @@ fn waste_all_selected_except_one_is_optimal_and_awkward() {
     let num_inputs = 40;
     let target = 15578;
     let feerate = 8.190512;
-    let min_fee = 0;
     let base_weight = 453;
     let long_term_feerate_diff = -3.630499;
     let change_weight = 1;
@@ -39,8 +38,7 @@ fn waste_all_selected_except_one_is_optimal_and_awkward() {
     let cs = CoinSelector::new(&candidates, base_weight);
     let target = Target {
         value: target,
-        feerate,
-        min_fee,
+        fee: TargetFee::from_feerate(feerate),
     };
 
     let solutions = cs.bnb_solutions(Waste {
@@ -72,7 +70,7 @@ fn waste_naive_effective_value_shouldnt_be_better() {
     let num_inputs = 23;
     let target = 1475;
     let feerate = 1.0;
-    let min_fee = 989;
+    // let min_fee = 989;
     let base_weight = 0;
     let long_term_feerate_diff = 3.8413858;
     let change_weight = 1;
@@ -85,11 +83,6 @@ fn waste_naive_effective_value_shouldnt_be_better() {
         output_weight: change_weight,
         spend_weight: change_spend_weight,
     };
-    let drain = Drain {
-        weights: drain_weights,
-        value: 0,
-    };
-
     let change_policy =
         ChangePolicy::min_value_and_waste(drain_weights, 0, feerate, long_term_feerate);
     let wv = test_wv(&mut rng);
@@ -99,8 +92,7 @@ fn waste_naive_effective_value_shouldnt_be_better() {
 
     let target = Target {
         value: target,
-        feerate,
-        min_fee,
+        fee: TargetFee::from_feerate(feerate),
     };
 
     let solutions = cs.bnb_solutions(Waste {
@@ -118,7 +110,7 @@ fn waste_naive_effective_value_shouldnt_be_better() {
     let mut naive_select = cs.clone();
     naive_select.sort_candidates_by_key(|(_, wv)| core::cmp::Reverse(Ordf32(wv.value_pwu())));
     // we filter out failing onces below
-    let _ = naive_select.select_until_target_met(target, drain);
+    let _ = naive_select.select_until_target_met(target);
 
     let bench_waste = naive_select.waste(
         target,
@@ -136,7 +128,6 @@ fn waste_doesnt_take_too_long_to_finish() {
     let num_inputs = 22;
     let target = 0;
     let feerate = 4.9522414;
-    let min_fee = 0;
     let base_weight = 2;
     let long_term_feerate_diff = -0.17994404;
     let change_weight = 1;
@@ -160,8 +151,7 @@ fn waste_doesnt_take_too_long_to_finish() {
 
     let target = Target {
         value: target,
-        feerate,
-        min_fee,
+        fee: TargetFee::from_feerate(feerate),
     };
 
     let solutions = cs.bnb_solutions(Waste {
@@ -190,7 +180,6 @@ fn waste_lower_long_term_feerate_but_still_need_to_select_all() {
     let num_inputs = 16;
     let target = 5586;
     let feerate = 9.397041;
-    let min_fee = 0;
     let base_weight = 91;
     let long_term_feerate_diff = 0.22074795;
     let change_weight = 1;
@@ -213,8 +202,7 @@ fn waste_lower_long_term_feerate_but_still_need_to_select_all() {
 
     let target = Target {
         value: target,
-        feerate,
-        min_fee,
+        fee: TargetFee::from_feerate(feerate),
     };
 
     let solutions = cs.bnb_solutions(Waste {
@@ -249,7 +237,6 @@ fn waste_low_but_non_negative_rate_diff_means_adding_more_inputs_might_reduce_ex
     let num_inputs = 22;
     let target = 7620;
     let feerate = 8.173157;
-    let min_fee = 0;
     let base_weight = 35;
     let long_term_feerate_diff = 0.0;
     let change_weight = 1;
@@ -277,8 +264,7 @@ fn waste_low_but_non_negative_rate_diff_means_adding_more_inputs_might_reduce_ex
 
     let target = Target {
         value: target,
-        feerate,
-        min_fee,
+        fee: TargetFee::from_feerate(feerate),
     };
 
     let solutions = cs.bnb_solutions(Waste {
@@ -369,7 +355,7 @@ proptest! {
     //             let mut cmp_benchmarks = vec![
     //                 {
     //                     let mut naive_select = cs.clone();
-    //                     naive_select.sort_candidates_by_key(|(_, wv)| core::cmp::Reverse(wv.effective_value(target.feerate)));
+    //                     naive_select.sort_candidates_by_key(|(_, wv)| core::cmp::Reverse(wv.effective_value(target.fee.rate)));
     //                     // we filter out failing onces below
     //                     let _ = naive_select.select_until_target_met(target, Drain { weights: drain, value: 0 });
     //                     naive_select
@@ -381,7 +367,7 @@ proptest! {
     //                 },
     //                 {
     //                     let mut all_effective_selected = cs.clone();
-    //                     all_effective_selected.select_all_effective(target.feerate);
+    //                     all_effective_selected.select_all_effective(target.fee.rate);
     //                     all_effective_selected
     //                 }
     //             ];
