@@ -98,11 +98,15 @@ proptest! {
             long_term_feerate: params.long_term_feerate(),
             change_policy,
         };
-
-        let (score, rounds) = common::bnb_search(&mut cs, metric, params.n_candidates * 10)?;
-        // the +1 is because the iterator will always try selecting nothing as a solution so we have
-        // to do one extra iteration to try that
-        prop_assert!(rounds <= params.n_candidates + 1, "\t\tscore={} rounds={}", score, rounds);
+        let is_impossible = !cs.is_selection_possible(params.target());
+        match common::bnb_search(&mut cs, metric, params.n_candidates * 10) {
+            Ok((score, rounds)) => {
+                // the +1 is because the iterator will always try selecting nothing as a solution so we have
+                // to do one extra iteration to try that
+                prop_assert!(rounds <= params.n_candidates + 1, "\t\tscore={} rounds={}", score, rounds)
+            },
+            Err(_e) => assert!(is_impossible),
+        }
     }
 
     #[test]
