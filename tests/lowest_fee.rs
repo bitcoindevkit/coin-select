@@ -99,9 +99,10 @@ proptest! {
             change_policy,
         };
 
-        let (score, rounds) = common::bnb_search(&mut cs, metric, params.n_candidates)?;
-        println!("\t\tscore={} rounds={}", score, rounds);
-        prop_assert!(rounds <= params.n_candidates);
+        let (score, rounds) = common::bnb_search(&mut cs, metric, params.n_candidates * 10)?;
+        // the +1 is because the iterator will always try selecting nothing as a solution so we have
+        // to do one extra iteration to try that
+        prop_assert!(rounds <= params.n_candidates + 1, "\t\tscore={} rounds={}", score, rounds);
     }
 
     #[test]
