@@ -2,7 +2,7 @@
 
 use bdk_coin_select::{
     float::Ordf32, BnbMetric, Candidate, ChangePolicy, CoinSelector, Drain, DrainWeights, FeeRate,
-    NoBnbSolution, Replace, Target, TargetFee,
+    NoBnbSolution, Replace, Target, TargetFee, TargetOutputs,
 };
 use proptest::{
     prelude::*,
@@ -45,7 +45,7 @@ where
 
     let target = params.target();
 
-    let mut selection = CoinSelector::new(&candidates, params.base_weight);
+    let mut selection = CoinSelector::new(&candidates);
     let mut exp_selection = selection.clone();
 
     if metric.requires_ordering_by_descending_value_pwu() {
@@ -67,11 +67,12 @@ where
     if exp_result.is_some() {
         let selected_value = exp_selection.selected_value();
         let drain = exp_selection.drain(target, change_policy);
-        let target_value = target.value;
+        let target_value = target.value();
         let replace_fee = params
             .replace
             .map(|replace| {
-                replace.min_fee_to_do_replacement(exp_selection.weight(drain.weights.output_weight))
+                replace
+                    .min_fee_to_do_replacement(exp_selection.weight(target.outputs, drain.weights))
             })
             .unwrap_or(0);
         assert!(selected_value - target_value - drain.value >= replace_fee);
@@ -105,11 +106,12 @@ where
             // bonus check: ensure replacement fee is respected
             let selected_value = selection.selected_value();
             let drain = selection.drain(target, change_policy);
-            let target_value = target.value;
+            let target_value = target.value();
             let replace_fee = params
                 .replace
                 .map(|replace| {
-                    replace.min_fee_to_do_replacement(selection.weight(drain.weights.output_weight))
+                    replace
+                        .min_fee_to_do_replacement(selection.weight(target.outputs, drain.weights))
                 })
                 .unwrap_or(0);
             assert!(selected_value - target_value - drain.value >= replace_fee);
@@ -140,7 +142,7 @@ where
     let target = params.target();
 
     let init_cs = {
-        let mut cs = CoinSelector::new(&candidates, params.base_weight);
+        let mut cs = CoinSelector::new(&candidates);
         if metric.requires_ordering_by_descending_value_pwu() {
             cs.sort_candidates_by_descending_value_pwu();
         }
@@ -195,13 +197,15 @@ where
 pub struct StrategyParams {
     pub n_candidates: usize,
     pub target_value: u64,
-    pub base_weight: u32,
+    pub n_target_outputs: usize,
+    pub target_weight: u32,
     pub replace: Option<Replace>,
     pub feerate: f32,
     pub feerate_lt_diff: f32,
     pub drain_weight: u32,
     pub drain_spend_weight: u32,
     pub drain_dust: u64,
+    pub n_drain_outputs: usize,
 }
 
 impl StrategyParams {
@@ -211,7 +215,11 @@ impl StrategyParams {
                 rate: FeeRate::from_sat_per_vb(self.feerate),
                 replace: self.replace,
             },
-            value: self.target_value,
+            outputs: TargetOutputs {
+                value_sum: self.target_value,
+                weight_sum: self.target_weight,
+                n_outputs: self.n_target_outputs,
+            },
         }
     }
 
@@ -227,6 +235,7 @@ impl StrategyParams {
         DrainWeights {
             output_weight: self.drain_weight,
             spend_weight: self.drain_spend_weight,
+            n_outputs: self.n_drain_outputs,
         }
     }
 }
@@ -393,7 +402,7 @@ pub fn compare_against_benchmarks<M: BnbMetric + Clone>(
     let start = std::time::Instant::now();
     let mut rng = TestRng::deterministic_rng(RngAlgorithm::ChaCha);
     let target = params.target();
-    let cs = CoinSelector::new(&candidates, params.base_weight);
+    let cs = CoinSelector::new(&candidates);
     let solutions = cs.bnb_solutions(metric.clone());
 
     let best = solutions

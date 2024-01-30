@@ -1,12 +1,69 @@
-use crate::FeeRate;
+use crate::{varint_size, DrainWeights, FeeRate};
 
 /// A target value to select for along with feerate constraints.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd)]
 pub struct Target {
     /// The fee constraints that must be satisfied by the selection
     pub fee: TargetFee,
-    /// The minmum value that should be left for the output
-    pub value: u64,
+    /// The aggregate properties of outputs you're trying to fund
+    pub outputs: TargetOutputs,
+}
+
+impl Target {
+    /// The value target that we are trying to fund
+    pub fn value(&self) -> u64 {
+        self.outputs.value_sum
+    }
+}
+
+/// Information about the outputs we're trying to fund. Note the fields are total values since we
+/// don't care about the weights or the values of individual outputs for the purposes of coin
+/// selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd)]
+pub struct TargetOutputs {
+    /// The sum of the values of the individual `TxOuts`s.
+    pub value_sum: u64,
+    /// The sum of the weights of the individual `TxOut`s.
+    pub weight_sum: u32,
+    /// The total number of outputs
+    pub n_outputs: usize,
+}
+
+impl TargetOutputs {
+    /// The output weight of the outptus we're trying to fund
+    pub fn output_weight(&self) -> u32 {
+        self.weight_sum + varint_size(self.n_outputs) * 4
+    }
+
+    /// The output weight of the target's outputs combined with the drain outputs defined by
+    /// `drain_weight`.
+    ///
+    /// This is not a simple addition of the `drain_weight` and [`output_weight`] because of how
+    /// adding the drain weights might add an extra vbyte for the length of the varint.
+    ///
+    /// [`output_weight`]: Self::output_weight
+    pub fn output_weight_with_drain(&self, drain_weight: DrainWeights) -> u32 {
+        let n_outputs = drain_weight.n_outputs + self.n_outputs;
+        varint_size(n_outputs) * 4 + drain_weight.output_weight + self.weight_sum
+    }
+
+    /// Creates a `TargetOutputs` from a list of outputs represented as `(weight, value)` pairs.
+    pub fn fund_outputs(outputs: impl IntoIterator<Item = (u32, u64)>) -> Self {
+        let mut n_outputs = 0;
+        let mut weight_sum = 0;
+        let mut value_sum = 0;
+
+        for (weight, value) in outputs {
+            n_outputs += 1;
+            weight_sum += weight;
+            value_sum += value;
+        }
+        Self {
+            n_outputs,
+            weight_sum,
+            value_sum,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd)]
@@ -28,6 +85,32 @@ pub struct TargetFee {
     pub rate: FeeRate,
     /// The fee must enough enough to replace this
     pub replace: Option<Replace>,
+}
+
+impl Default for TargetFee {
+    /// The default is feerate set is [`FeeRate::DEFAULT_MIN_RELAY`] and doesn't replace anything.
+    fn default() -> Self {
+        Self {
+            rate: FeeRate::DEFAULT_MIN_RELAY,
+            replace: None,
+        }
+    }
+}
+
+impl TargetFee {
+    /// A target fee of 0 sats per vbyte (and no replacement)
+    pub const ZERO: Self = TargetFee {
+        rate: FeeRate::ZERO,
+        replace: None,
+    };
+
+    /// Creates a target fee from a feerate. The target won't include a replacement.
+    pub fn from_feerate(feerate: FeeRate) -> Self {
+        Self {
+            rate: feerate,
+            replace: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd)]
@@ -56,31 +139,5 @@ impl Replace {
         let min_fee_increment =
             (replacing_tx_weight as f32 * self.incremental_relay_feerate.spwu()).ceil() as u64;
         self.fee + min_fee_increment
-    }
-}
-
-impl Default for TargetFee {
-    /// The default is feerate set is [`FeeRate::DEFAULT_MIN_RELAY`] and doesn't replace anything.
-    fn default() -> Self {
-        Self {
-            rate: FeeRate::DEFAULT_MIN_RELAY,
-            replace: None,
-        }
-    }
-}
-
-impl TargetFee {
-    /// A target fee of 0 sats per vbyte (and no replacement)
-    pub const ZERO: Self = TargetFee {
-        rate: FeeRate::ZERO,
-        replace: None,
-    };
-
-    /// Creates a target fee from a feerate. The target won't include a replacement.
-    pub fn from_feerate(feerate: FeeRate) -> Self {
-        Self {
-            rate: feerate,
-            replace: None,
-        }
     }
 }
