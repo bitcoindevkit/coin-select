@@ -35,7 +35,7 @@ const EXCESS_RATIO: f32 = 1_000_000_f32;
 
 impl BnbMetric for MinExcessThenWeight {
     fn score(&mut self, cs: &CoinSelector<'_>) -> Option<Ordf32> {
-        let excess = cs.excess(self.target, Drain::none());
+        let excess = cs.excess(self.target, Drain::NONE);
         if excess < 0 {
             None
         } else {
@@ -135,7 +135,7 @@ fn bnb_finds_solution_if_possible_in_n_iter() {
         .expect("found a solution");
 
     assert_eq!(rounds, 193);
-    let excess = sol.excess(target, Drain::none());
+    let excess = sol.excess(target, Drain::NONE);
     assert_eq!(excess, 1);
 }
 

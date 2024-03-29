@@ -222,7 +222,7 @@ fn adding_another_input_to_remove_change() {
         let mut cs = cs.clone();
         cs.select(0);
         cs.select(2);
-        cs.excess(target, Drain::none());
+        cs.excess(target, Drain::NONE);
         assert!(cs.is_target_met(target));
         cs
     };
@@ -262,7 +262,7 @@ fn adding_another_input_to_remove_change() {
     let (score, _) = common::bnb_search(&mut cs, metric, 10).expect("finds solution");
     let best_solution_score = metric.score(&best_solution).expect("must be a solution");
 
-    assert_eq!(best_solution.drain(target, change_policy), Drain::none());
+    assert_eq!(best_solution.drain(target, change_policy), Drain::NONE);
 
     assert!(score <= best_solution_score);
     assert_eq!(cs.selected_indices(), best_solution.selected_indices());

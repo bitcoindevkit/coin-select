@@ -101,7 +101,7 @@ fn segwit_two_inputs_one_output() {
     );
     assert_eq!(
         (coin_selector
-            .implied_feerate(target_ouputs, Drain::none())
+            .implied_feerate(target_ouputs, Drain::NONE)
             .unwrap()
             .as_sat_vb()
             * 10.0)

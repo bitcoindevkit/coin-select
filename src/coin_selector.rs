@@ -391,7 +391,7 @@ impl<'a> CoinSelector<'a> {
 
     /// Whether the constraints of `Target` have been met.
     pub fn is_target_met(&self, target: Target) -> bool {
-        self.is_target_met_with_drain(target, Drain::none())
+        self.is_target_met_with_drain(target, Drain::NONE)
     }
 
     /// Select all unselected candidates
@@ -434,7 +434,7 @@ impl<'a> CoinSelector<'a> {
     }
 
     /// Figures out whether the current selection should have a change output given the
-    /// `change_policy`. If it shouldn't then it will return a [`Drain::none`]. The value of the
+    /// `change_policy`. If it should not, then it will return [`Drain::NONE`]. The value of the
     /// `Drain` will be the same as [`drain_value`].
     ///
     /// If [`is_target_met`] returns true for this selection then [`is_target_met_with_drain`] will
@@ -475,7 +475,7 @@ impl<'a> CoinSelector<'a> {
     pub fn select_until_target_met(&mut self, target: Target) -> Result<(), InsufficientFunds> {
         self.select_until(|cs| cs.is_target_met(target))
             .ok_or_else(|| InsufficientFunds {
-                missing: self.excess(target, Drain::none()).unsigned_abs(),
+                missing: self.excess(target, Drain::NONE).unsigned_abs(),
             })
     }
 

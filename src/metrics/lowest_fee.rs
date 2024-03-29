@@ -98,7 +98,7 @@ impl BnbMetric for LowestFee {
                     self.long_term_feerate,
                     self.target.outputs.n_outputs,
                 );
-                let cost_of_no_change = cs.excess(self.target, Drain::none());
+                let cost_of_no_change = cs.excess(self.target, Drain::NONE);
 
                 let best_score_with_change =
                     Ordf32(current_score.0 - cost_of_no_change as f32 + cost_of_adding_change);
@@ -131,7 +131,7 @@ impl BnbMetric for LowestFee {
             // scale = remaining_value_to_reach_feerate / effective_value_of_resized_input
             //
             // This should be intutive since we're finding out how to scale the input we're resizing to get the effective value we need.
-            let rate_excess = cs.rate_excess(self.target, Drain::none()) as f32;
+            let rate_excess = cs.rate_excess(self.target, Drain::NONE) as f32;
             let mut scale = Ordf32(0.0);
 
             if rate_excess < 0.0 {
@@ -150,7 +150,7 @@ impl BnbMetric for LowestFee {
             // We can use the same approach for replacement we just have to use the
             // incremental_relay_feerate.
             if let Some(replace) = self.target.fee.replace {
-                let replace_excess = cs.replacement_excess(self.target, Drain::none()) as f32;
+                let replace_excess = cs.replacement_excess(self.target, Drain::NONE) as f32;
                 if replace_excess < 0.0 {
                     let remaining_value_to_reach_feerate = replace_excess.abs();
                     let effective_value_of_resized_input =

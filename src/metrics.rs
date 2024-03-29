@@ -28,7 +28,7 @@ fn change_lower_bound(cs: &CoinSelector, target: Target, change_policy: ChangePo
 
         least_excess.drain(target, change_policy)
     } else {
-        Drain::none()
+        Drain::NONE
     }
 }
 

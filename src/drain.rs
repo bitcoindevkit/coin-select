@@ -80,11 +80,6 @@ impl Drain {
         value: 0,
     };
 
-    /// A drian representing no drain at all.
-    pub fn none() -> Self {
-        Self::default()
-    }
-
     /// is the "none" drain
     pub fn is_none(&self) -> bool {
         self == &Drain::NONE
