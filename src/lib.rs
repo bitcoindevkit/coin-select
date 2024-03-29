@@ -45,7 +45,7 @@ pub const TX_FIXED_FIELD_WEIGHT: u32 = (4 /* nVersion */ + 4/* nLockTime */) * 4
 /// The weight of a taproot keyspend witness
 pub const TR_KEYSPEND_SATISFACTION_WEIGHT: u32 = 1 /*witness_len*/ + 1 /*item len*/ +  64 /*signature*/;
 
-/// The weight of a segwit `v1` (taproot) script pubkey in an outupt. This does not include the weight of
+/// The weight of a segwit `v1` (taproot) script pubkey in an output. This does not include the weight of
 /// the `TxOut` itself or the script pubkey length field.
 pub const TR_SPK_WEIGHT: u32 = (1 + 1 + 32) * 4; // version + push + key
 

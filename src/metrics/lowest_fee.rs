@@ -69,7 +69,7 @@ impl BnbMetric for LowestFee {
                     if ev < -0.0 {
                         let value_per_negative_effective_value =
                             low_sats_per_wu_candidate.value as f32 / ev.abs();
-                        // this is how much abosolute value we have to add to cancel out the excess
+                        // this is how much absolute value we have to add to cancel out the excess
                         let extra_value_needed_to_get_rid_of_change = amount_above_change_threshold
                             as f32
                             * value_per_negative_effective_value;

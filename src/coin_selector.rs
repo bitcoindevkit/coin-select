@@ -164,7 +164,8 @@ impl<'a> CoinSelector<'a> {
 
     /// Current weight of transaction implied by the selection.
     ///
-    /// If you don't have any drain outputs (only target outputs) just set drain_weights tio [`DrainWeights::NONE`].
+    /// If you don't have any drain outputs (only target outputs) just set drain_weights to
+    /// [`DrainWeights::NONE`].
     pub fn weight(&self, target_ouputs: TargetOutputs, drain_weight: DrainWeights) -> u32 {
         TX_FIXED_FIELD_WEIGHT
             + self.input_weight()

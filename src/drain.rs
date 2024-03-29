@@ -96,7 +96,7 @@ impl Drain {
 /// adding this outupt(s).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ChangePolicy {
-    /// The minimum amount of excesss there needs to be add a change output.
+    /// The minimum amount of excess there needs to be add a change output.
     pub min_value: u64,
     /// The weights of the drain that would be added according to the policy.
     pub drain_weights: DrainWeights,
