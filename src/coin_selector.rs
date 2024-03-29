@@ -229,13 +229,18 @@ impl<'a> CoinSelector<'a> {
 
     /// The fee the current selection and `drain_weight` should pay to satisfy `target_fee`.
     ///
-    /// `drain_weight` can be 0 to indicate no draining output
+    /// This compares the fee calculated from the target feerate with the fee calculated from the
+    /// [`Replace`] constraints and returns the larger of the two.
+    ///
+    /// `drain_weight` can be 0 to indicate no draining output.
     pub fn implied_fee(&self, target: Target, drain_weights: DrainWeights) -> u64 {
         let mut implied_fee = self.implied_fee_from_feerate(target, drain_weights);
 
         if let Some(replace) = target.fee.replace {
-            implied_fee =
-                replace.min_fee_to_do_replacement(self.weight(target.outputs, drain_weights));
+            implied_fee = Ord::max(
+                implied_fee,
+                replace.min_fee_to_do_replacement(self.weight(target.outputs, drain_weights)),
+            );
         }
 
         implied_fee
