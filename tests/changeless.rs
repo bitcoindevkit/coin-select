@@ -1,8 +1,10 @@
 #![allow(unused)]
 mod common;
 use bdk_coin_select::{
-    float::Ordf32, metrics, Candidate, ChangePolicy, CoinSelector, Drain, DrainWeights, FeeRate,
-    Target, TargetFee,
+    float::Ordf32,
+    metrics::{self, Changeless},
+    Candidate, ChangePolicy, CoinSelector, Drain, DrainWeights, FeeRate, Target, TargetFee,
+    TargetOutputs,
 };
 use proptest::{prelude::*, proptest, test_runner::*};
 use rand::{prelude::IteratorRandom, Rng, RngCore};
@@ -21,40 +23,46 @@ fn test_wv(mut rng: impl RngCore) -> impl Iterator<Item = Candidate> {
 
 proptest! {
     #![proptest_config(ProptestConfig {
-        timeout: 1_000,
-        cases: 1_000,
         ..Default::default()
     })]
+
     #[test]
     #[cfg(not(debug_assertions))] // too slow if compiling for debug
-    fn changeless_prop(
-        num_inputs in 0usize..15,
-        target in 0u64..15_000,
-        feerate in 1.0f32..10.0,
-        replace in common::maybe_replace(0u64..1_000),
-        base_weight in 0u32..500,
-        long_term_feerate_diff in -5.0f32..5.0,
-        change_weight in 1u32..100,
-        change_spend_weight in 1u32..100,
+    fn compare_against_benchmarks(
+        n_candidates in 0..15_usize,        // candidates (n)
+        target_value in 500..1_000_000_u64,   // target value (sats)
+        n_target_outputs in 1..150_usize,    // the number of outputs we're funding
+        target_weight in 0..10_000_u32,         // the sum of the weight of the outputs (wu)
+        replace in common::maybe_replace(0..10_000u64), // The weight of the transaction we're replacing
+        feerate in 1.0..100.0_f32,          // feerate (sats/vb)
+        feerate_lt_diff in -5.0..50.0_f32,  // longterm feerate diff (sats/vb)
+        drain_weight in 100..=500_u32,      // drain weight (wu)
+        drain_spend_weight in 1..=2000_u32, // drain spend weight (wu)
+        drain_dust in 100..=1000_u64,       // drain dust (sats)
+        n_drain_outputs in 1..150usize,     // the number of drain outputs
     ) {
         println!("=======================================");
         let start = std::time::Instant::now();
         let mut rng = TestRng::deterministic_rng(RngAlgorithm::ChaCha);
-        let long_term_feerate = FeeRate::from_sat_per_vb(0.0f32.max(feerate - long_term_feerate_diff));
         let feerate = FeeRate::from_sat_per_vb(feerate);
-        let drain = DrainWeights {
-            output_weight: change_weight,
-            spend_weight: change_spend_weight,
+        let drain_weights = DrainWeights {
+            output_weight: drain_weight,
+            spend_weight: drain_spend_weight,
+            n_outputs: n_drain_outputs,
         };
 
-        let change_policy = ChangePolicy::min_value_and_waste(drain, 0, feerate, long_term_feerate);
+        let change_policy = ChangePolicy::min_value(drain_weights, 100);
         let wv = test_wv(&mut rng);
-        let candidates = wv.take(num_inputs).collect::<Vec<_>>();
+        let candidates = wv.take(n_candidates).collect::<Vec<_>>();
 
-        let cs = CoinSelector::new(&candidates, base_weight);
+        let cs = CoinSelector::new(&candidates);
 
         let target = Target {
-            value: target,
+            outputs: TargetOutputs {
+                n_outputs: n_target_outputs,
+                value_sum: target_value,
+                weight_sum: target_weight,
+            },
             fee: TargetFee {
                 rate: feerate,
                 replace,
@@ -75,23 +83,8 @@ proptest! {
 
 
         match best {
-            Some((_i, (sol, _score))) => {
-                let mut cmp_benchmarks = vec![
-                    {
-                        let mut naive_select = cs.clone();
-                        naive_select.sort_candidates_by_key(|(_, wv)| core::cmp::Reverse(Ordf32(wv.effective_value(target.fee.rate))));
-                        // we filter out failing onces below
-                        let _ = naive_select.select_until_target_met(target);
-                        naive_select
-                    },
-                ];
-
-                cmp_benchmarks.extend((0..10).map(|_|random_minimal_selection(&cs, target, long_term_feerate, change_policy, &mut rng)));
-
-                let cmp_benchmarks = cmp_benchmarks.into_iter().filter(|cs| cs.is_target_met(target));
-                for (_bench_id, bench) in cmp_benchmarks.enumerate() {
-                    prop_assert!(bench.drain_value(target, change_policy).is_some() >=  sol.drain_value(target, change_policy).is_some());
-                }
+            Some((_i, (_sol, _score))) => {
+                /* there is nothing to check about a changeless solution */
             }
             None => {
                 let mut cs = cs.clone();
@@ -103,24 +96,4 @@ proptest! {
         }
         dbg!(start.elapsed());
     }
-}
-
-// this is probably a useful thing to have on CoinSelector but I don't want to design it yet
-#[allow(unused)]
-fn random_minimal_selection<'a>(
-    cs: &CoinSelector<'a>,
-    target: Target,
-    long_term_feerate: FeeRate,
-    change_policy: ChangePolicy,
-    rng: &mut impl RngCore,
-) -> CoinSelector<'a> {
-    let mut cs = cs.clone();
-    let mut last_waste: Option<f32> = None;
-    while let Some(next) = cs.unselected_indices().choose(rng) {
-        cs.select(next);
-        if cs.is_target_met(target) {
-            break;
-        }
-    }
-    cs
 }

@@ -1,6 +1,6 @@
 mod common;
 use bdk_coin_select::{
-    float::Ordf32, BnbMetric, Candidate, CoinSelector, Drain, Target, TargetFee,
+    float::Ordf32, BnbMetric, Candidate, CoinSelector, Drain, Target, TargetFee, TargetOutputs,
 };
 #[macro_use]
 extern crate alloc;
@@ -25,6 +25,7 @@ fn test_wv(mut rng: impl RngCore) -> impl Iterator<Item = Candidate> {
     })
 }
 
+/// This is just an exhaustive search
 struct MinExcessThenWeight {
     target: Target,
 }
@@ -34,7 +35,7 @@ const EXCESS_RATIO: f32 = 1_000_000_f32;
 
 impl BnbMetric for MinExcessThenWeight {
     fn score(&mut self, cs: &CoinSelector<'_>) -> Option<Ordf32> {
-        let excess = cs.excess(self.target, Drain::none());
+        let excess = cs.excess(self.target, Drain::NONE);
         if excess < 0 {
             None
         } else {
@@ -47,12 +48,7 @@ impl BnbMetric for MinExcessThenWeight {
     fn bound(&mut self, cs: &CoinSelector<'_>) -> Option<Ordf32> {
         let mut cs = cs.clone();
         cs.select_until_target_met(self.target).ok()?;
-        if let Some(last_index) = cs.selected_indices().iter().last().copied() {
-            cs.deselect(last_index);
-        }
-        Some(Ordf32(
-            cs.excess(self.target, Drain::none()) as f32 * EXCESS_RATIO + cs.input_weight() as f32,
-        ))
+        Some(Ordf32(cs.input_weight() as f32))
     }
 }
 
@@ -71,21 +67,25 @@ fn bnb_finds_an_exact_solution_in_n_iter() {
 
     let solution: Vec<Candidate> = (0..solution_len).map(|_| wv.next().unwrap()).collect();
     let solution_weight = {
-        let mut cs = CoinSelector::new(&solution, 0);
+        let mut cs = CoinSelector::new(&solution);
         cs.select_all();
         cs.input_weight()
     };
 
-    let target = solution.iter().map(|c| c.value).sum();
+    let target_value = solution.iter().map(|c| c.value).sum();
 
     let mut candidates = solution;
     candidates.extend(wv.take(num_additional_canidates));
     candidates.sort_unstable_by_key(|wv| core::cmp::Reverse(wv.value));
 
-    let cs = CoinSelector::new(&candidates, 0);
+    let cs = CoinSelector::new(&candidates);
 
     let target = Target {
-        value: target,
+        outputs: TargetOutputs {
+            value_sum: target_value,
+            weight_sum: 0,
+            n_outputs: 1,
+        },
         // we're trying to find an exact selection value so set fees to 0
         fee: TargetFee::ZERO,
     };
@@ -100,23 +100,27 @@ fn bnb_finds_an_exact_solution_in_n_iter() {
         .last()
         .expect("it found a solution");
 
-    assert_eq!(rounds, 50168);
+    assert_eq!(rounds, 3150);
     assert_eq!(best.input_weight(), solution_weight);
-    assert_eq!(best.selected_value(), target.value, "score={:?}", score);
+    assert_eq!(best.selected_value(), target_value, "score={:?}", score);
 }
 
 #[test]
 fn bnb_finds_solution_if_possible_in_n_iter() {
     let num_inputs = 18;
-    let target = 8_314;
+    let target_value = 8_314;
     let mut rng = TestRng::deterministic_rng(RngAlgorithm::ChaCha);
     let wv = test_wv(&mut rng);
     let candidates = wv.take(num_inputs).collect::<Vec<_>>();
 
-    let cs = CoinSelector::new(&candidates, 0);
+    let cs = CoinSelector::new(&candidates);
 
     let target = Target {
-        value: target,
+        outputs: TargetOutputs {
+            value_sum: target_value,
+            weight_sum: 0,
+            n_outputs: 1,
+        },
         fee: TargetFee::default(),
     };
 
@@ -130,28 +134,28 @@ fn bnb_finds_solution_if_possible_in_n_iter() {
         .last()
         .expect("found a solution");
 
-    assert_eq!(rounds, 202);
-    let excess = sol.excess(target, Drain::none());
-    assert_eq!(excess, 8);
+    assert_eq!(rounds, 193);
+    let excess = sol.excess(target, Drain::NONE);
+    assert_eq!(excess, 1);
 }
 
 proptest! {
     #[test]
-    fn bnb_always_finds_solution_if_possible(num_inputs in 1usize..18, target in 0u64..10_000) {
+    fn bnb_always_finds_solution_if_possible(num_inputs in 1usize..18, target_value in 0u64..10_000) {
         let mut rng = TestRng::deterministic_rng(RngAlgorithm::ChaCha);
         let wv = test_wv(&mut rng);
         let candidates = wv.take(num_inputs).collect::<Vec<_>>();
-        let cs = CoinSelector::new(&candidates, 0);
+        let cs = CoinSelector::new(&candidates);
 
         let target = Target {
-            value: target,
+            outputs: TargetOutputs { value_sum: target_value, weight_sum: 0, n_outputs: 1 },
             fee: TargetFee::ZERO,
         };
 
         let solutions = cs.bnb_solutions(MinExcessThenWeight { target });
 
         match solutions.enumerate().filter_map(|(i, sol)| Some((i, sol?))).last() {
-            Some((_i, (sol, _score))) => assert!(sol.selected_value() >= target.value),
+            Some((_i, (sol, _score))) => assert!(sol.selected_value() >= target_value),
             _ => prop_assert!(!cs.is_selection_possible(target)),
         }
     }
@@ -168,17 +172,17 @@ proptest! {
 
         let solution: Vec<Candidate> = (0..solution_len).map(|_| wv.next().unwrap()).collect();
         let solution_weight = {
-            let mut cs = CoinSelector::new(&solution, 0);
+            let mut cs = CoinSelector::new(&solution);
             cs.select_all();
             cs.input_weight()
         };
 
-        let target = solution.iter().map(|c| c.value).sum();
+        let target_value = solution.iter().map(|c| c.value).sum();
 
         let mut candidates = solution;
         candidates.extend(wv.take(num_additional_canidates));
 
-        let mut cs = CoinSelector::new(&candidates, 0);
+        let mut cs = CoinSelector::new(&candidates);
 
 
         for i in 0..num_preselected.min(solution_len) {
@@ -189,7 +193,7 @@ proptest! {
         cs.sort_candidates_by_key(|(_, wv)| core::cmp::Reverse(wv.value));
 
         let target = Target {
-            value: target,
+            outputs: TargetOutputs { value_sum: target_value, weight_sum: 0, n_outputs: 1 },
             // we're trying to find an exact selection value so set fees to 0
             fee: TargetFee::ZERO,
         };
@@ -203,6 +207,6 @@ proptest! {
             .expect("it found a solution");
 
         prop_assert!(best.input_weight() <= solution_weight);
-        prop_assert_eq!(best.selected_value(), target.value);
+        prop_assert_eq!(best.selected_value(), target.value());
     }
 }

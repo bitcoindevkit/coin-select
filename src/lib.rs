@@ -22,8 +22,6 @@ pub mod metrics;
 
 mod feerate;
 pub use feerate::*;
-mod change_policy;
-pub use change_policy::*;
 mod target;
 pub use target::*;
 mod drain;
@@ -41,18 +39,25 @@ pub const TXOUT_BASE_WEIGHT: u32 =
     // The spk length
     + (4 * 1);
 
-/// The additional weight over [`TXIN_BASE_WEIGHT`] incurred by satisfying an input with a keyspend
-/// and the default sighash.
-pub const TR_KEYSPEND_SATISFACTION_WEIGHT: u32 = 66;
+/// The weight of the `nVersion` and `nLockTime` transaction fields
+pub const TX_FIXED_FIELD_WEIGHT: u32 = (4 /* nVersion */ + 4/* nLockTime */) * 4;
 
-/// The additional weight of an output with segwit `v1` (taproot) script pubkey over a blank output (i.e. with weight [`TXOUT_BASE_WEIGHT`]).
+/// The weight of a taproot keyspend witness
+pub const TR_KEYSPEND_SATISFACTION_WEIGHT: u32 = 1 /*witness_len*/ + 1 /*item len*/ +  64 /*signature*/;
+
+/// The weight of a segwit `v1` (taproot) script pubkey in an output. This does not include the weight of
+/// the `TxOut` itself or the script pubkey length field.
 pub const TR_SPK_WEIGHT: u32 = (1 + 1 + 32) * 4; // version + push + key
 
 /// The weight of a taproot TxIn with witness
 pub const TR_KEYSPEND_TXIN_WEIGHT: u32 = TXIN_BASE_WEIGHT + TR_KEYSPEND_SATISFACTION_WEIGHT;
 
+/// The minimum value a taproot output can have to be relayed with Bitcoin core's default dust relay
+/// fee
+pub const TR_DUST_RELAY_MIN_VALUE: u64 = 330;
+
 /// Helper to calculate varint size. `v` is the value the varint represents.
-fn varint_size(v: usize) -> u32 {
+const fn varint_size(v: usize) -> u32 {
     if v <= 0xfc {
         return 1;
     }
