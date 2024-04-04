@@ -9,7 +9,7 @@ use crate::{varint_size, FeeRate, TR_KEYSPEND_TXIN_WEIGHT, TR_SPK_WEIGHT, TXOUT_
 pub struct DrainWeights {
     /// The weight of including this drain output.
     ///
-    /// This must take into account the weight change from varint output count.
+    /// This must not take into account any weight change from varint output count.
     pub output_weight: u32,
     /// The weight of spending this drain output (in the future).
     pub spend_weight: u32,
