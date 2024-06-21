@@ -54,13 +54,13 @@ fn run_bitcoin_core_rbf_tests() {
     ));
     assert!(!pays_for_rbf(
         low_fee,
-        low_fee + 22,
+        low_fee + 29,
         8 + 1,
         very_high_relay_feerate
     ));
     assert!(pays_for_rbf(
         low_fee,
-        low_fee + 23, // 23 = (10 * (9/4)).ceil()
+        low_fee + 30, // 30 = (10 * (9/4).ceil())
         8 + 1,
         very_high_relay_feerate
     ));

@@ -136,8 +136,9 @@ impl Replace {
     ///
     /// [RBF rule 4]: https://github.com/bitcoin/bitcoin/blob/master/doc/policy/mempool-replacements.md#current-replace-by-fee-policy
     pub fn min_fee_to_do_replacement(&self, replacing_tx_weight: u64) -> u64 {
-        let min_fee_increment =
-            (replacing_tx_weight as f32 * self.incremental_relay_feerate.spwu()).ceil() as u64;
-        self.fee + min_fee_increment
+        self.fee
+            + self
+                .incremental_relay_feerate
+                .implied_fee(replacing_tx_weight)
     }
 }
