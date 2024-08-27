@@ -11,7 +11,7 @@ pub struct Changeless {
 }
 
 impl BnbMetric for Changeless {
-    fn score(&mut self, cs: &CoinSelector<'_>) -> Option<Ordf32> {
+    fn score<C>(&mut self, cs: &CoinSelector<'_, C>) -> Option<Ordf32> {
         if cs.is_target_met(self.target)
             && cs.drain_value(self.target, self.change_policy).is_none()
         {
@@ -21,7 +21,7 @@ impl BnbMetric for Changeless {
         }
     }
 
-    fn bound(&mut self, cs: &CoinSelector<'_>) -> Option<Ordf32> {
+    fn bound<C>(&mut self, cs: &CoinSelector<'_, C>) -> Option<Ordf32> {
         if change_lower_bound(cs, self.target, self.change_policy).is_some() {
             None
         } else {

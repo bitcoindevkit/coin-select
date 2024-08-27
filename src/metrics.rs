@@ -14,7 +14,11 @@ pub use changeless::*;
 //
 // NOTE: this should stay private because it requires cs to be sorted such that all negative
 // effective value candidates are next to each other.
-fn change_lower_bound(cs: &CoinSelector, target: Target, change_policy: ChangePolicy) -> Drain {
+fn change_lower_bound<C>(
+    cs: &CoinSelector<C>,
+    target: Target,
+    change_policy: ChangePolicy,
+) -> Drain {
     let has_change_now = cs.drain_value(target, change_policy).is_some();
 
     if has_change_now {
@@ -38,7 +42,7 @@ macro_rules! impl_for_tuple {
             where $($a: BnbMetric),*
         {
             #[allow(unused)]
-            fn score(&mut self, cs: &CoinSelector<'_>) -> Option<crate::float::Ordf32> {
+            fn score<C>(&mut self, cs: &CoinSelector<'_, C>) -> Option<crate::float::Ordf32> {
                 let mut acc = Option::<f32>::None;
                 for (score, ratio) in [$((self.$b.0.score(cs)?, self.$b.1)),*] {
                     let score: Ordf32 = score;
@@ -51,7 +55,7 @@ macro_rules! impl_for_tuple {
                 acc.map(Ordf32)
             }
             #[allow(unused)]
-            fn bound(&mut self, cs: &CoinSelector<'_>) -> Option<crate::float::Ordf32> {
+            fn bound<C>(&mut self, cs: &CoinSelector<'_, C>) -> Option<crate::float::Ordf32> {
                 let mut acc = Option::<f32>::None;
                 for (score, ratio) in [$((self.$b.0.bound(cs)?, self.$b.1)),*] {
                     let score: Ordf32 = score;
@@ -72,7 +76,7 @@ macro_rules! impl_for_tuple {
 }
 
 impl_for_tuple!();
-impl_for_tuple!(A 0 B 1);
-impl_for_tuple!(A 0 B 1 C 2);
-impl_for_tuple!(A 0 B 1 C 2 D 3);
-impl_for_tuple!(A 0 B 1 C 2 D 3 E 4);
+impl_for_tuple!(TA 0 TB 1);
+impl_for_tuple!(TA 0 TB 1 TC 2);
+impl_for_tuple!(TA 0 TB 1 TC 2 TD 3);
+impl_for_tuple!(TA 0 TB 1 TC 2 TD 3 TE 4);
