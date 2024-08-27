@@ -151,8 +151,8 @@ fn combined_changeless_metric() {
     };
 
     let candidates = common::gen_candidates(params.n_candidates);
-    let mut cs_a = CoinSelector::new(&candidates);
-    let mut cs_b = CoinSelector::new(&candidates);
+    let mut cs_a = CoinSelector::new(&candidates, common::c_to_c);
+    let mut cs_b = CoinSelector::new(&candidates, common::c_to_c);
 
     let change_policy = ChangePolicy::min_value(params.drain_weights(), params.drain_dust);
 
@@ -216,7 +216,7 @@ fn adding_another_input_to_remove_change() {
         },
     ];
 
-    let mut cs = CoinSelector::new(&candidates);
+    let mut cs = CoinSelector::new(&candidates, common::c_to_c);
 
     let best_solution = {
         let mut cs = cs.clone();

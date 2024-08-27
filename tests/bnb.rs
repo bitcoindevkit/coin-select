@@ -34,7 +34,7 @@ struct MinExcessThenWeight {
 const EXCESS_RATIO: f32 = 1_000_000_f32;
 
 impl BnbMetric for MinExcessThenWeight {
-    fn score(&mut self, cs: &CoinSelector<'_>) -> Option<Ordf32> {
+    fn score<C>(&mut self, cs: &CoinSelector<'_, C>) -> Option<Ordf32> {
         let excess = cs.excess(self.target, Drain::NONE);
         if excess < 0 {
             None
@@ -45,7 +45,7 @@ impl BnbMetric for MinExcessThenWeight {
         }
     }
 
-    fn bound(&mut self, cs: &CoinSelector<'_>) -> Option<Ordf32> {
+    fn bound<C>(&mut self, cs: &CoinSelector<'_, C>) -> Option<Ordf32> {
         let mut cs = cs.clone();
         cs.select_until_target_met(self.target).ok()?;
         Some(Ordf32(cs.input_weight() as f32))
@@ -67,7 +67,7 @@ fn bnb_finds_an_exact_solution_in_n_iter() {
 
     let solution: Vec<Candidate> = (0..solution_len).map(|_| wv.next().unwrap()).collect();
     let solution_weight = {
-        let mut cs = CoinSelector::new(&solution);
+        let mut cs = CoinSelector::new(&solution, common::c_to_c);
         cs.select_all();
         cs.input_weight()
     };
@@ -78,7 +78,7 @@ fn bnb_finds_an_exact_solution_in_n_iter() {
     candidates.extend(wv.take(num_additional_canidates));
     candidates.sort_unstable_by_key(|wv| core::cmp::Reverse(wv.value));
 
-    let cs = CoinSelector::new(&candidates);
+    let cs = CoinSelector::new(&candidates, common::c_to_c);
 
     let target = Target {
         outputs: TargetOutputs {
@@ -113,7 +113,7 @@ fn bnb_finds_solution_if_possible_in_n_iter() {
     let wv = test_wv(&mut rng);
     let candidates = wv.take(num_inputs).collect::<Vec<_>>();
 
-    let cs = CoinSelector::new(&candidates);
+    let cs = CoinSelector::new(&candidates, common::c_to_c);
 
     let target = Target {
         outputs: TargetOutputs {
@@ -145,7 +145,7 @@ proptest! {
         let mut rng = TestRng::deterministic_rng(RngAlgorithm::ChaCha);
         let wv = test_wv(&mut rng);
         let candidates = wv.take(num_inputs).collect::<Vec<_>>();
-        let cs = CoinSelector::new(&candidates);
+        let cs = CoinSelector::new(&candidates, common::c_to_c);
 
         let target = Target {
             outputs: TargetOutputs { value_sum: target_value, weight_sum: 0, n_outputs: 1 },

@@ -11,33 +11,47 @@ use alloc::{borrow::Cow, collections::BTreeSet, vec::Vec};
 ///
 /// [`select`]: CoinSelector::select
 /// [`bnb_solutions`]: CoinSelector::bnb_solutions
-#[derive(Debug, Clone)]
-pub struct CoinSelector<'a> {
-    candidates: &'a [Candidate],
+#[derive(Debug)]
+pub struct CoinSelector<'a, C> {
+    inputs: &'a [C],
+    candidates: Cow<'a, [Candidate]>,
     selected: Cow<'a, BTreeSet<usize>>,
     banned: Cow<'a, BTreeSet<usize>>,
     candidate_order: Cow<'a, Vec<usize>>,
 }
 
-impl<'a> CoinSelector<'a> {
-    /// Creates a new coin selector from some candidate inputs and a `base_weight`.
-    ///
-    /// The `base_weight` is the weight of the transaction without any inputs and without a change
-    /// output.
-    ///
-    /// The `CoinSelector` does not keep track of the final transaction's output count. The caller
-    /// is responsible for including the potential output-count varint weight change in the
-    /// corresponding [`DrainWeights`].
-    ///
-    /// Note that methods in `CoinSelector` will refer to inputs by the index in the `candidates`
-    /// slice you pass in.
-    pub fn new(candidates: &'a [Candidate]) -> Self {
+impl<'a, C> Clone for CoinSelector<'a, C> {
+    fn clone(&self) -> Self {
         Self {
-            candidates,
+            inputs: self.inputs,
+            candidates: self.candidates.clone(),
+            selected: self.selected.clone(),
+            banned: self.banned.clone(),
+            candidate_order: self.candidate_order.clone(),
+        }
+    }
+}
+
+impl<'a, C> CoinSelector<'a, C> {
+    /// Create a coin selector from raw `inputs` and a `to_candidate` closure.
+    ///
+    /// `to_candidate` maps each raw input to a [`Candidate`] representation.
+    pub fn new<F>(inputs: &'a [C], to_candidate: F) -> Self
+    where
+        F: Fn(&C) -> Candidate,
+    {
+        Self {
+            inputs,
+            candidates: inputs.iter().map(to_candidate).collect(),
             selected: Cow::Owned(Default::default()),
             banned: Cow::Owned(Default::default()),
-            candidate_order: Cow::Owned((0..candidates.len()).collect()),
+            candidate_order: Cow::Owned((0..inputs.len()).collect()),
         }
+    }
+
+    /// Get a reference to the raw inputs.
+    pub fn raw_inputs(&self) -> &[C] {
+        self.inputs
     }
 
     /// Iterate over all the candidates in their currently sorted order. Each item has the original
@@ -62,11 +76,39 @@ impl<'a> CoinSelector<'a> {
         self.selected.to_mut().remove(&index)
     }
 
-    /// Convienince method to pick elements of a slice by the indexes that are currently selected.
-    /// Obviously the slice must represent the inputs ordered in the same way as when they were
-    /// passed to `Candidates::new`.
-    pub fn apply_selection<T>(&self, candidates: &'a [T]) -> impl Iterator<Item = &'a T> + '_ {
-        self.selected.iter().map(move |i| &candidates[*i])
+    /// Apply the current coin selection.
+    ///
+    /// `apply_action` is a closure that is meant to construct an unsigned transaction based on the
+    /// current selection. `apply_action` is a [`FnMut`] so it can mutate a structure of the
+    /// caller's liking (most likely a transaction). The input is a  [`FinishAction`], which conveys
+    /// adding inputs or outputs.
+    ///
+    /// # Errors
+    ///
+    /// The selection must satisfy `target` otherwise an [`InsufficientFunds`] error is returned.
+    pub fn finish<F>(
+        self,
+        target: Target,
+        change_policy: ChangePolicy,
+        mut apply_action: F,
+    ) -> Result<(), InsufficientFunds>
+    where
+        F: FnMut(FinishAction<'a, C>),
+    {
+        let excess = self.excess(target, Drain::NONE);
+        if excess < 0 {
+            let missing = excess.unsigned_abs();
+            return Err(InsufficientFunds { missing });
+        }
+        let drain = self.drain(target, change_policy);
+        for i in self.selected.iter().copied() {
+            apply_action(FinishAction::Input(&self.inputs[i]));
+        }
+        apply_action(FinishAction::TargetOutput(target));
+        if drain.is_some() {
+            apply_action(FinishAction::DrainOutput(drain));
+        }
+        Ok(())
     }
 
     /// Select the input at `index`. `index` refers to its position in the original `candidates`
@@ -331,7 +373,7 @@ impl<'a> CoinSelector<'a> {
             let mut excess_waste = self.excess(target, drain).max(0) as f32;
             // we allow caller to discount this waste depending on how wasteful excess actually is
             // to them.
-            excess_waste *= excess_discount.max(0.0).min(1.0);
+            excess_waste *= excess_discount.clamp(0.0, 1.0);
             waste += excess_waste;
         } else {
             waste +=
@@ -489,7 +531,7 @@ impl<'a> CoinSelector<'a> {
     #[must_use]
     pub fn select_until(
         &mut self,
-        mut predicate: impl FnMut(&CoinSelector<'a>) -> bool,
+        mut predicate: impl FnMut(&CoinSelector<'a, C>) -> bool,
     ) -> Option<()> {
         loop {
             if predicate(&*self) {
@@ -503,7 +545,7 @@ impl<'a> CoinSelector<'a> {
     }
 
     /// Return an iterator that can be used to select candidates.
-    pub fn select_iter(self) -> SelectIter<'a> {
+    pub fn select_iter(self) -> SelectIter<'a, C> {
         SelectIter { cs: self.clone() }
     }
 
@@ -517,7 +559,7 @@ impl<'a> CoinSelector<'a> {
     pub fn bnb_solutions<M: BnbMetric>(
         &self,
         metric: M,
-    ) -> impl Iterator<Item = Option<(CoinSelector<'a>, Ordf32)>> {
+    ) -> impl Iterator<Item = Option<(CoinSelector<'a, C>, Ordf32)>> {
         crate::bnb::BnbIter::new(self.clone(), metric)
     }
 
@@ -545,7 +587,7 @@ impl<'a> CoinSelector<'a> {
     }
 }
 
-impl<'a> core::fmt::Display for CoinSelector<'a> {
+impl<'a, C> core::fmt::Display for CoinSelector<'a, C> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "[")?;
         let mut candidates = self.candidates().peekable();
@@ -572,12 +614,12 @@ impl<'a> core::fmt::Display for CoinSelector<'a> {
 /// The `SelectIter` allows you to select candidates by calling [`Iterator::next`].
 ///
 /// The [`Iterator::Item`] is a tuple of `(selector, last_selected_index, last_selected_candidate)`.
-pub struct SelectIter<'a> {
-    cs: CoinSelector<'a>,
+pub struct SelectIter<'a, C> {
+    cs: CoinSelector<'a, C>,
 }
 
-impl<'a> Iterator for SelectIter<'a> {
-    type Item = (CoinSelector<'a>, usize, Candidate);
+impl<'a, C> Iterator for SelectIter<'a, C> {
+    type Item = (CoinSelector<'a, C>, usize, Candidate);
 
     fn next(&mut self) -> Option<Self::Item> {
         let (index, wv) = self.cs.unselected().next()?;
@@ -586,7 +628,7 @@ impl<'a> Iterator for SelectIter<'a> {
     }
 }
 
-impl<'a> DoubleEndedIterator for SelectIter<'a> {
+impl<'a, C> DoubleEndedIterator for SelectIter<'a, C> {
     fn next_back(&mut self) -> Option<Self::Item> {
         let (index, wv) = self.cs.unselected().next_back()?;
         self.cs.select(index);
@@ -631,6 +673,18 @@ impl core::fmt::Display for NoBnbSolution {
 
 #[cfg(feature = "std")]
 impl std::error::Error for NoBnbSolution {}
+
+/// Action to apply on a transaction.
+///
+/// This is used in [`CoinSelector::finish`] to populate a transaction with the current selection.
+pub enum FinishAction<'a, C> {
+    /// Input to add to the transaction.
+    Input(&'a C),
+    /// Recipient output to add to the transaction.
+    TargetOutput(Target),
+    /// Drain (change) output to add to the transction.
+    DrainOutput(Drain),
+}
 
 /// A `Candidate` represents an input candidate for [`CoinSelector`].
 ///

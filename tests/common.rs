@@ -25,6 +25,10 @@ pub fn maybe_replace(
     proptest::option::of(replace(fee_strategy))
 }
 
+pub fn c_to_c(c: &Candidate) -> Candidate {
+    *c
+}
+
 /// Used for constructing a proptest that compares an exhaustive search result with a bnb result
 /// with the given metric.
 ///
@@ -45,7 +49,7 @@ where
 
     let target = params.target();
 
-    let mut selection = CoinSelector::new(&candidates);
+    let mut selection = CoinSelector::new(&candidates, c_to_c);
     let mut exp_selection = selection.clone();
 
     if metric.requires_ordering_by_descending_value_pwu() {
@@ -142,7 +146,7 @@ where
     let target = params.target();
 
     let init_cs = {
-        let mut cs = CoinSelector::new(&candidates);
+        let mut cs = CoinSelector::new(&candidates, c_to_c);
         if metric.requires_ordering_by_descending_value_pwu() {
             cs.sort_candidates_by_descending_value_pwu();
         }
@@ -259,7 +263,7 @@ pub fn gen_candidates(n: usize) -> Vec<Candidate> {
     .collect()
 }
 
-pub fn print_candidates(params: &StrategyParams, cs: &CoinSelector<'_>) {
+pub fn print_candidates<C>(params: &StrategyParams, cs: &CoinSelector<'_, C>) {
     println!("\tcandidates:");
     for (i, candidate) in cs.candidates() {
         println!(
@@ -273,18 +277,18 @@ pub fn print_candidates(params: &StrategyParams, cs: &CoinSelector<'_>) {
     }
 }
 
-pub struct ExhaustiveIter<'a> {
-    stack: Vec<(CoinSelector<'a>, bool)>, // for branches: (cs, this_index, include?)
+pub struct ExhaustiveIter<'a, C> {
+    stack: Vec<(CoinSelector<'a, C>, bool)>, // for branches: (cs, this_index, include?)
 }
 
-impl<'a> ExhaustiveIter<'a> {
-    fn new(cs: &CoinSelector<'a>) -> Option<Self> {
+impl<'a, C> ExhaustiveIter<'a, C> {
+    fn new(cs: &CoinSelector<'a, C>) -> Option<Self> {
         let mut iter = Self { stack: Vec::new() };
         iter.push_branches(cs);
         Some(iter)
     }
 
-    fn push_branches(&mut self, cs: &CoinSelector<'a>) {
+    fn push_branches(&mut self, cs: &CoinSelector<'a, C>) {
         let next_index = match cs.unselected_indices().next() {
             Some(next_index) => next_index,
             None => return,
@@ -306,8 +310,8 @@ impl<'a> ExhaustiveIter<'a> {
     }
 }
 
-impl<'a> Iterator for ExhaustiveIter<'a> {
-    type Item = (CoinSelector<'a>, bool);
+impl<'a, C> Iterator for ExhaustiveIter<'a, C> {
+    type Item = (CoinSelector<'a, C>, bool);
 
     fn next(&mut self) -> Option<Self::Item> {
         let (cs, inclusion) = self.stack.pop()?;
@@ -316,7 +320,7 @@ impl<'a> Iterator for ExhaustiveIter<'a> {
     }
 }
 
-pub fn exhaustive_search<M>(cs: &mut CoinSelector, metric: &mut M) -> Option<(Ordf32, usize)>
+pub fn exhaustive_search<C, M>(cs: &mut CoinSelector<C>, metric: &mut M) -> Option<(Ordf32, usize)>
 where
     M: BnbMetric,
 {
@@ -324,7 +328,7 @@ where
         cs.sort_candidates_by_descending_value_pwu();
     }
 
-    let mut best = Option::<(CoinSelector, Ordf32)>::None;
+    let mut best = Option::<(CoinSelector<C>, Ordf32)>::None;
     let mut rounds = 0;
 
     let iter = ExhaustiveIter::new(cs)?
@@ -353,8 +357,8 @@ where
     best.map(|(_, score)| (score, rounds))
 }
 
-pub fn bnb_search<M>(
-    cs: &mut CoinSelector,
+pub fn bnb_search<C, M>(
+    cs: &mut CoinSelector<C>,
     metric: M,
     max_rounds: usize,
 ) -> Result<(Ordf32, usize), NoBnbSolution>
@@ -402,7 +406,7 @@ pub fn compare_against_benchmarks<M: BnbMetric + Clone>(
     let start = std::time::Instant::now();
     let mut rng = TestRng::deterministic_rng(RngAlgorithm::ChaCha);
     let target = params.target();
-    let cs = CoinSelector::new(&candidates);
+    let cs = CoinSelector::new(&candidates, c_to_c);
     let solutions = cs.bnb_solutions(metric.clone());
 
     let best = solutions
@@ -465,13 +469,13 @@ pub fn compare_against_benchmarks<M: BnbMetric + Clone>(
 }
 
 #[allow(unused)]
-fn randomly_satisfy_target<'a>(
-    cs: &CoinSelector<'a>,
+fn randomly_satisfy_target<'a, C>(
+    cs: &CoinSelector<'a, C>,
     target: Target,
     change_policy: ChangePolicy,
     rng: &mut impl RngCore,
     mut metric: impl BnbMetric,
-) -> CoinSelector<'a> {
+) -> CoinSelector<'a, C> {
     let mut cs = cs.clone();
 
     let mut last_score: Option<Ordf32> = None;

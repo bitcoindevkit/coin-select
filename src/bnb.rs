@@ -8,15 +8,15 @@ use alloc::collections::BinaryHeap;
 /// An [`Iterator`] that iterates over rounds of branch and bound to minimize the score of the
 /// provided [`BnbMetric`].
 #[derive(Debug)]
-pub(crate) struct BnbIter<'a, M: BnbMetric> {
-    queue: BinaryHeap<Branch<'a>>,
+pub(crate) struct BnbIter<'a, C, M: BnbMetric> {
+    queue: BinaryHeap<Branch<'a, C>>,
     best: Option<Ordf32>,
     /// The `BnBMetric` that will score each selection
     metric: M,
 }
 
-impl<'a, M: BnbMetric> Iterator for BnbIter<'a, M> {
-    type Item = Option<(CoinSelector<'a>, Ordf32)>;
+impl<'a, C, M: BnbMetric> Iterator for BnbIter<'a, C, M> {
+    type Item = Option<(CoinSelector<'a, C>, Ordf32)>;
 
     fn next(&mut self) -> Option<Self::Item> {
         // {
@@ -70,8 +70,8 @@ impl<'a, M: BnbMetric> Iterator for BnbIter<'a, M> {
     }
 }
 
-impl<'a, M: BnbMetric> BnbIter<'a, M> {
-    pub(crate) fn new(mut selector: CoinSelector<'a>, metric: M) -> Self {
+impl<'a, C, M: BnbMetric> BnbIter<'a, C, M> {
+    pub(crate) fn new(mut selector: CoinSelector<'a, C>, metric: M) -> Self {
         let mut iter = BnbIter {
             queue: BinaryHeap::default(),
             best: None,
@@ -87,7 +87,7 @@ impl<'a, M: BnbMetric> BnbIter<'a, M> {
         iter
     }
 
-    fn consider_adding_to_queue(&mut self, cs: &CoinSelector<'a>, is_exclusion: bool) {
+    fn consider_adding_to_queue(&mut self, cs: &CoinSelector<'a, C>, is_exclusion: bool) {
         let bound = self.metric.bound(cs);
         if let Some(bound) = bound {
             let is_good_enough = match self.best {
@@ -127,7 +127,7 @@ impl<'a, M: BnbMetric> BnbIter<'a, M> {
           }*/
     }
 
-    fn insert_new_branches(&mut self, cs: &CoinSelector<'a>) {
+    fn insert_new_branches(&mut self, cs: &CoinSelector<'a, C>) {
         let (next_index, next) = match cs.unselected().next() {
             Some(c) => c,
             None => return, // exhausted
@@ -161,13 +161,13 @@ impl<'a, M: BnbMetric> BnbIter<'a, M> {
 }
 
 #[derive(Debug, Clone)]
-struct Branch<'a> {
+struct Branch<'a, C> {
     lower_bound: Ordf32,
-    selector: CoinSelector<'a>,
+    selector: CoinSelector<'a, C>,
     is_exclusion: bool,
 }
 
-impl<'a> Ord for Branch<'a> {
+impl<'a, C> Ord for Branch<'a, C> {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         // NOTE: Reverse comparision `lower_bound` because we want a min-heap (by default BinaryHeap
         // is a max-heap).
@@ -181,19 +181,19 @@ impl<'a> Ord for Branch<'a> {
     }
 }
 
-impl<'a> PartialOrd for Branch<'a> {
+impl<'a, C> PartialOrd for Branch<'a, C> {
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<'a> PartialEq for Branch<'a> {
+impl<'a, C> PartialEq for Branch<'a, C> {
     fn eq(&self, other: &Self) -> bool {
         self.lower_bound == other.lower_bound
     }
 }
 
-impl<'a> Eq for Branch<'a> {}
+impl<'a, C> Eq for Branch<'a, C> {}
 
 /// A branch and bound metric where we minimize the [`Ordf32`] score.
 ///
@@ -202,7 +202,7 @@ pub trait BnbMetric {
     /// Get the score of a given selection.
     ///
     /// If this returns `None`, the selection is invalid.
-    fn score(&mut self, cs: &CoinSelector<'_>) -> Option<Ordf32>;
+    fn score<C>(&mut self, cs: &CoinSelector<'_, C>) -> Option<Ordf32>;
 
     /// Get the lower bound score using a heuristic.
     ///
@@ -211,7 +211,7 @@ pub trait BnbMetric {
     ///
     /// If this returns `None`, the current branch and all descendant branches will not have valid
     /// solutions.
-    fn bound(&mut self, cs: &CoinSelector<'_>) -> Option<Ordf32>;
+    fn bound<C>(&mut self, cs: &CoinSelector<'_, C>) -> Option<Ordf32>;
 
     /// Returns whether the metric requies we order candidates by descending value per weight unit.
     fn requires_ordering_by_descending_value_pwu(&self) -> bool {

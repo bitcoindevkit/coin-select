@@ -23,7 +23,7 @@ pub struct LowestFee {
 }
 
 impl BnbMetric for LowestFee {
-    fn score(&mut self, cs: &CoinSelector<'_>) -> Option<Ordf32> {
+    fn score<C>(&mut self, cs: &CoinSelector<'_, C>) -> Option<Ordf32> {
         if !cs.is_target_met(self.target) {
             return None;
         }
@@ -44,7 +44,7 @@ impl BnbMetric for LowestFee {
         Some(Ordf32(long_term_fee as f32))
     }
 
-    fn bound(&mut self, cs: &CoinSelector<'_>) -> Option<Ordf32> {
+    fn bound<C>(&mut self, cs: &CoinSelector<'_, C>) -> Option<Ordf32> {
         if cs.is_target_met(self.target) {
             let current_score = self.score(cs).unwrap();
 
