@@ -46,8 +46,8 @@ proptest! {
         let mut rng = TestRng::deterministic_rng(RngAlgorithm::ChaCha);
         let feerate = FeeRate::from_sat_per_vb(feerate);
         let drain_weights = DrainWeights {
-            output_weight: drain_weight,
-            spend_weight: drain_spend_weight,
+            output_weight: drain_weight as u64,
+            spend_weight: drain_spend_weight as u64,
             n_outputs: n_drain_outputs,
         };
 
@@ -61,7 +61,7 @@ proptest! {
             outputs: TargetOutputs {
                 n_outputs: n_target_outputs,
                 value_sum: target_value,
-                weight_sum: target_weight,
+                weight_sum: target_weight as u64,
             },
             fee: TargetFee {
                 rate: feerate,

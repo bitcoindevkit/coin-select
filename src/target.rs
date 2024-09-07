@@ -24,14 +24,14 @@ pub struct TargetOutputs {
     /// The sum of the values of the individual `TxOuts`s.
     pub value_sum: u64,
     /// The sum of the weights of the individual `TxOut`s.
-    pub weight_sum: u32,
+    pub weight_sum: u64,
     /// The total number of outputs
     pub n_outputs: usize,
 }
 
 impl TargetOutputs {
     /// The output weight of the outptus we're trying to fund
-    pub fn output_weight(&self) -> u32 {
+    pub fn output_weight(&self) -> u64 {
         self.weight_sum + varint_size(self.n_outputs) * 4
     }
 
@@ -42,13 +42,13 @@ impl TargetOutputs {
     /// adding the drain weights might add an extra vbyte for the length of the varint.
     ///
     /// [`output_weight`]: Self::output_weight
-    pub fn output_weight_with_drain(&self, drain_weight: DrainWeights) -> u32 {
+    pub fn output_weight_with_drain(&self, drain_weight: DrainWeights) -> u64 {
         let n_outputs = drain_weight.n_outputs + self.n_outputs;
         varint_size(n_outputs) * 4 + drain_weight.output_weight + self.weight_sum
     }
 
     /// Creates a `TargetOutputs` from a list of outputs represented as `(weight, value)` pairs.
-    pub fn fund_outputs(outputs: impl IntoIterator<Item = (u32, u64)>) -> Self {
+    pub fn fund_outputs(outputs: impl IntoIterator<Item = (u64, u64)>) -> Self {
         let mut n_outputs = 0;
         let mut weight_sum = 0;
         let mut value_sum = 0;
@@ -135,7 +135,7 @@ impl Replace {
     /// This is defined by [RBF rule 4].
     ///
     /// [RBF rule 4]: https://github.com/bitcoin/bitcoin/blob/master/doc/policy/mempool-replacements.md#current-replace-by-fee-policy
-    pub fn min_fee_to_do_replacement(&self, replacing_tx_weight: u32) -> u64 {
+    pub fn min_fee_to_do_replacement(&self, replacing_tx_weight: u64) -> u64 {
         let min_fee_increment =
             (replacing_tx_weight as f32 * self.incremental_relay_feerate.spwu()).ceil() as u64;
         self.fee + min_fee_increment

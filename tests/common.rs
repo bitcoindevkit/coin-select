@@ -217,7 +217,7 @@ impl StrategyParams {
             },
             outputs: TargetOutputs {
                 value_sum: self.target_value,
-                weight_sum: self.target_weight,
+                weight_sum: self.target_weight as u64,
                 n_outputs: self.n_target_outputs,
             },
         }
@@ -233,8 +233,8 @@ impl StrategyParams {
 
     pub fn drain_weights(&self) -> DrainWeights {
         DrainWeights {
-            output_weight: self.drain_weight,
-            spend_weight: self.drain_spend_weight,
+            output_weight: self.drain_weight as u64,
+            spend_weight: self.drain_spend_weight as u64,
             n_outputs: self.n_drain_outputs,
         }
     }

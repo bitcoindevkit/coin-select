@@ -10,18 +10,20 @@
 ```rust
 use std::str::FromStr;
 use bdk_coin_select::{ CoinSelector, Candidate, TR_KEYSPEND_TXIN_WEIGHT, Drain, FeeRate, Target, ChangePolicy, TargetOutputs, TargetFee, DrainWeights};
-use bitcoin::{ Address, Network, Transaction, TxIn, TxOut };
+use bitcoin::{ Amount, Address, Network, Transaction, TxIn, TxOut };
 
-let recipient_addr = 
-    Address::from_str("tb1pvjf9t34fznr53u5tqhejz4nr69luzkhlvsdsdfq9pglutrpve2xq7hps46").unwrap();
+let recipient_addr: Address = "tb1pvjf9t34fznr53u5tqhejz4nr69luzkhlvsdsdfq9pglutrpve2xq7hps46"
+    .parse::<Address<_>>()
+    .unwrap()
+    .assume_checked();
 
 let outputs = vec![TxOut {
-    value: 3_500_000,
-    script_pubkey: recipient_addr.payload.script_pubkey(),
+    value: Amount::from_sat(3_500_000),
+    script_pubkey: recipient_addr.script_pubkey(),
 }];
 
 let target = Target {
-    outputs: TargetOutputs::fund_outputs(outputs.iter().map(|output| (output.weight() as u32, output.value))),
+    outputs: TargetOutputs::fund_outputs(outputs.iter().map(|output| (output.weight().to_wu(), output.value.to_sat()))),
     fee: TargetFee::from_feerate(FeeRate::from_sat_per_vb(42.0))
 };
 
@@ -87,14 +89,16 @@ metric by implementing the [`BnbMetric`] yourself but we don't recommend this.
 use std::str::FromStr;
 use bdk_coin_select::{ Candidate, CoinSelector, FeeRate, Target, TargetFee, TargetOutputs, ChangePolicy, TR_KEYSPEND_TXIN_WEIGHT, TR_DUST_RELAY_MIN_VALUE};
 use bdk_coin_select::metrics::LowestFee;
-use bitcoin::{ Address, Network, Transaction, TxIn, TxOut };
+use bitcoin::{ Address, Amount, Network, Transaction, TxIn, TxOut };
 
-let recipient_addr =
-    Address::from_str("tb1pvjf9t34fznr53u5tqhejz4nr69luzkhlvsdsdfq9pglutrpve2xq7hps46").unwrap();
+let recipient_addr: Address = "tb1pvjf9t34fznr53u5tqhejz4nr69luzkhlvsdsdfq9pglutrpve2xq7hps46"
+    .parse::<Address<_>>()
+    .unwrap()
+    .assume_checked();
 
 let outputs = vec![TxOut {
-    value: 210_000,
-    script_pubkey: recipient_addr.payload.script_pubkey(),
+    value: Amount::from_sat(210_000),
+    script_pubkey: recipient_addr.script_pubkey(),
 }];
 
 let candidates = [
@@ -125,7 +129,7 @@ let mut coin_selector = CoinSelector::new(&candidates);
 
 let target = Target {
     fee: TargetFee::from_feerate(FeeRate::from_sat_per_vb(15.0)),
-    outputs: TargetOutputs::fund_outputs(outputs.iter().map(|output| (output.weight() as u32, output.value))),
+    outputs: TargetOutputs::fund_outputs(outputs.iter().map(|output| (output.weight().to_wu(), output.value.to_sat()))),
 };
 
 // The change output must be at least this size to be relayed.

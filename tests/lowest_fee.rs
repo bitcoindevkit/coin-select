@@ -139,7 +139,7 @@ fn combined_changeless_metric() {
     let params = common::StrategyParams {
         n_candidates: 100,
         target_value: 100_000,
-        target_weight: 1000 - TX_FIXED_FIELD_WEIGHT - 1,
+        target_weight: 1000 - TX_FIXED_FIELD_WEIGHT as u32 - 1,
         replace: None,
         feerate: 5.0,
         feerate_lt_diff: -4.0,

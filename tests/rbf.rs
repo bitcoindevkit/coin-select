@@ -56,7 +56,7 @@ fn run_bitcoin_core_rbf_tests() {
 fn pays_for_rbf(
     original_fees: u64,
     replacement_fees: u64,
-    replacement_vsize: u32,
+    replacement_vsize: u64,
     relay_fee: FeeRate,
 ) -> bool {
     let min_fee = Replace {
