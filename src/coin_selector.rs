@@ -331,7 +331,7 @@ impl<'a> CoinSelector<'a> {
             let mut excess_waste = self.excess(target, drain).max(0) as f32;
             // we allow caller to discount this waste depending on how wasteful excess actually is
             // to them.
-            excess_waste *= excess_discount.max(0.0).min(1.0);
+            excess_waste *= excess_discount.clamp(0.0, 1.0);
             waste += excess_waste;
         } else {
             waste +=

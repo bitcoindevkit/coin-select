@@ -72,10 +72,10 @@ impl TargetOutputs {
 /// There are two orthogonal constraints:
 ///
 /// - `rate`: The feerate of the transaction must at least be this high. You set this to control how
-/// quickly your transaction is confirmed. Typically a coin selection will try and hit this target
-/// exactly but it might go over if the `replace` constraint takes precedence or if the
-/// [`ChangePolicy`] determines that the excess value should just be given to miners (rather than
-/// create a change output).
+///   quickly your transaction is confirmed. Typically a coin selection will try and hit this target
+///   exactly but it might go over if the `replace` constraint takes precedence or if the
+///   [`ChangePolicy`] determines that the excess value should just be given to miners (rather than
+///   create a change output).
 /// - `replace`: The selection must have a high enough fee to satisfy [RBF rule 4]
 ///
 /// [RBF rule 4]: https://github.com/bitcoin/bitcoin/blob/master/doc/policy/mempool-replacements.md#current-replace-by-fee-policy
