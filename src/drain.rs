@@ -10,9 +10,9 @@ pub struct DrainWeights {
     /// The weight of including this drain output.
     ///
     /// This must not take into account any weight change from varint output count.
-    pub output_weight: u32,
+    pub output_weight: u64,
     /// The weight of spending this drain output (in the future).
-    pub spend_weight: u32,
+    pub spend_weight: u64,
     /// The total number of outputs that the drain will use
     pub n_outputs: usize,
 }

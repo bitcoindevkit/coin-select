@@ -131,14 +131,14 @@ impl<'a> CoinSelector<'a> {
 
     /// The weight of the inputs including the witness header and the varint for the number of
     /// inputs.
-    pub fn input_weight(&self) -> u32 {
+    pub fn input_weight(&self) -> u64 {
         let is_segwit_tx = self.selected().any(|(_, wv)| wv.is_segwit);
-        let witness_header_extra_weight = is_segwit_tx as u32 * 2;
+        let witness_header_extra_weight = is_segwit_tx as u64 * 2;
 
         let input_count = self.selected().map(|(_, wv)| wv.input_count).sum::<usize>();
         let input_varint_weight = varint_size(input_count) * 4;
 
-        let selected_weight: u32 = self
+        let selected_weight: u64 = self
             .selected()
             .map(|(_, candidate)| {
                 let mut weight = candidate.weight;
@@ -166,7 +166,7 @@ impl<'a> CoinSelector<'a> {
     ///
     /// If you don't have any drain outputs (only target outputs) just set drain_weights to
     /// [`DrainWeights::NONE`].
-    pub fn weight(&self, target_ouputs: TargetOutputs, drain_weight: DrainWeights) -> u32 {
+    pub fn weight(&self, target_ouputs: TargetOutputs, drain_weight: DrainWeights) -> u64 {
         TX_FIXED_FIELD_WEIGHT
             + self.input_weight()
             + target_ouputs.output_weight_with_drain(drain_weight)
@@ -331,7 +331,7 @@ impl<'a> CoinSelector<'a> {
             let mut excess_waste = self.excess(target, drain).max(0) as f32;
             // we allow caller to discount this waste depending on how wasteful excess actually is
             // to them.
-            excess_waste *= excess_discount.max(0.0).min(1.0);
+            excess_waste *= excess_discount.clamp(0.0, 1.0);
             waste += excess_waste;
         } else {
             waste +=
@@ -642,7 +642,7 @@ pub struct Candidate {
     /// Total weight of including this/these UTXO(s).
     /// `txin` fields: `prevout`, `nSequence`, `scriptSigLen`, `scriptSig`, `scriptWitnessLen`,
     /// `scriptWitness` should all be included.
-    pub weight: u32,
+    pub weight: u64,
     /// Total number of inputs; so we can calculate extra `varint` weight due to `vin` len changes.
     pub input_count: usize,
     /// Whether this [`Candidate`] contains at least one segwit spend.
@@ -660,7 +660,7 @@ impl Candidate {
     ///
     /// `satisfaction_weight` is the weight of `scriptSigLen + scriptSig + scriptWitnessLen +
     /// scriptWitness`.
-    pub fn new(value: u64, satisfaction_weight: u32, is_segwit: bool) -> Candidate {
+    pub fn new(value: u64, satisfaction_weight: u64, is_segwit: bool) -> Candidate {
         let weight = TXIN_BASE_WEIGHT + satisfaction_weight;
         Candidate {
             value,
