@@ -5,7 +5,7 @@ fn run_bitcoin_core_rbf_tests() {
     // see rbf_tests.cpp
     //
     // https://github.com/bitcoin/bitcoin/blob/e69796c79c0aa202087a13ba62d9fbcc1c8754d4/src/test/rbf_tests.cpp#L151
-    const CENT: u64 = 100_000; // no clue why this would be called CENT 😕
+    const CENT: u64 = 1_000_000;
     let low_fee = CENT / 100;
     let _normal_fee = CENT / 10;
     let high_fee = CENT;
