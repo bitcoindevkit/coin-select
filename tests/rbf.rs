@@ -12,43 +12,43 @@ fn run_bitcoin_core_rbf_tests() {
     let incremental_relay_feerate = FeeRate::DEFUALT_RBF_INCREMENTAL_RELAY;
     let higher_relay_feerate = FeeRate::from_sat_per_vb(2.0);
 
-    assert!(pays_for_rbf(high_fee, high_fee, 1, FeeRate::ZERO));
-    assert!(!pays_for_rbf(high_fee, high_fee - 1, 1, FeeRate::ZERO));
-    assert!(!pays_for_rbf(high_fee + 1, high_fee, 1, FeeRate::ZERO));
+    assert!(pays_for_rbf(high_fee, high_fee, 4, FeeRate::ZERO));
+    assert!(!pays_for_rbf(high_fee, high_fee - 1, 4, FeeRate::ZERO));
+    assert!(!pays_for_rbf(high_fee + 1, high_fee, 4, FeeRate::ZERO));
     assert!(!pays_for_rbf(
         high_fee,
         high_fee + 1,
-        2,
+        8,
         incremental_relay_feerate
     ));
     assert!(pays_for_rbf(
         high_fee,
         high_fee + 2,
-        2,
+        8,
         incremental_relay_feerate
     ));
     assert!(!pays_for_rbf(
         high_fee,
         high_fee + 2,
-        2,
+        8,
         higher_relay_feerate
     ));
     assert!(pays_for_rbf(
         high_fee,
         high_fee + 4,
-        2,
+        8,
         higher_relay_feerate
     ));
     assert!(!pays_for_rbf(
         low_fee,
         high_fee,
-        99999999,
+        99999999 * 4,
         incremental_relay_feerate
     ));
     assert!(pays_for_rbf(
         low_fee,
         high_fee + 99999999,
-        99999999,
+        99999999 * 4,
         incremental_relay_feerate
     ));
 }
@@ -56,14 +56,14 @@ fn run_bitcoin_core_rbf_tests() {
 fn pays_for_rbf(
     original_fees: u64,
     replacement_fees: u64,
-    replacement_vsize: u64,
+    replacement_weight: u64,
     relay_fee: FeeRate,
 ) -> bool {
     let min_fee = Replace {
         fee: original_fees,
         incremental_relay_feerate: relay_fee,
     }
-    .min_fee_to_do_replacement(replacement_vsize * 4);
+    .min_fee_to_do_replacement(replacement_weight);
 
     replacement_fees >= min_fee
 }
