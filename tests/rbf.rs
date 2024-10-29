@@ -11,6 +11,7 @@ fn run_bitcoin_core_rbf_tests() {
     let high_fee = CENT;
     let incremental_relay_feerate = FeeRate::DEFUALT_RBF_INCREMENTAL_RELAY;
     let higher_relay_feerate = FeeRate::from_sat_per_vb(2.0);
+    let very_high_relay_feerate = FeeRate::from_sat_per_vb(10.0);
 
     assert!(pays_for_rbf(high_fee, high_fee, 4, FeeRate::ZERO));
     assert!(!pays_for_rbf(high_fee, high_fee - 1, 4, FeeRate::ZERO));
@@ -50,6 +51,18 @@ fn run_bitcoin_core_rbf_tests() {
         high_fee + 99999999,
         99999999 * 4,
         incremental_relay_feerate
+    ));
+    assert!(!pays_for_rbf(
+        low_fee,
+        low_fee + 22,
+        8 + 1,
+        very_high_relay_feerate
+    ));
+    assert!(pays_for_rbf(
+        low_fee,
+        low_fee + 23, // 23 = (10 * (9/4)).ceil()
+        8 + 1,
+        very_high_relay_feerate
     ));
 }
 
