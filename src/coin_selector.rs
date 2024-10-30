@@ -247,7 +247,10 @@ impl<'a> CoinSelector<'a> {
     }
 
     fn implied_fee_from_feerate(&self, target: Target, drain_weights: DrainWeights) -> u64 {
-        (self.weight(target.outputs, drain_weights) as f32 * target.fee.rate.spwu()).ceil() as u64
+        target
+            .fee
+            .rate
+            .implied_fee(self.weight(target.outputs, drain_weights))
     }
 
     /// The actual fee the selection would pay if it was used in a transaction that had

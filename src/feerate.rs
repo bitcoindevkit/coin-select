@@ -78,6 +78,12 @@ impl FeeRate {
     pub fn spwu(&self) -> f32 {
         self.0 .0
     }
+
+    /// The fee that the transaction with weight `tx_weight` should pay in order to satisfy the fee rate given by `self`.
+    pub fn implied_fee(&self, tx_weight: u64) -> u64 {
+        // The fee rate is applied to the rounded-up vbytes.
+        ((tx_weight as f32 / 4.0).ceil() * self.as_sat_vb()).ceil() as u64
+    }
 }
 
 impl Add<FeeRate> for FeeRate {
