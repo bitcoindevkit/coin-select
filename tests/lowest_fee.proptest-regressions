@@ -10,3 +10,4 @@ cc c580ee452624915fc710d5fe724c7a9347472ccd178f66c9db9479cfc6168f48 # shrinks to
 cc 850e0115aeeb7ed50235fdb4b5183eb5bf8309a45874dc261e3d3fd2d8c84660 # shrinks to n_candidates = 8, target_value = 444541, base_weight = 253, min_fee = 0, feerate = 55.98181, feerate_lt_diff = 36.874306, drain_weight = 490, drain_spend_weight = 1779, drain_dust = 100
 cc ca9831dfe4ad27fc705ae4af201b9b50739404bda0e1e130072858634f8d25d9 # added by llfourn from ci: has a case where the lowest fee metric would benefit by adding change
 cc 85d9dc968a690553484d0f166f3d778c3e0ec7d9059809c2818b62d6609853c1
+cc b32bb279f62e2300a14c9053cff09f6a953bf1020b878958cb510258ffe65028 # added by jp1ac4 from ci

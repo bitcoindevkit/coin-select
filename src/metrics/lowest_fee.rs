@@ -115,6 +115,10 @@ impl BnbMetric for LowestFee {
                 .select_iter()
                 .find(|(cs, _, _)| cs.is_target_met(self.target))?;
 
+            // If this selection is already perfect, return its score directly.
+            if cs.excess(self.target, Drain::NONE) == 0 {
+                return Some(self.score(&cs).unwrap());
+            };
             cs.deselect(resize_index);
 
             // We need to find the minimum fee we'd pay if we satisfy the feerate constraint. We do
@@ -131,7 +135,10 @@ impl BnbMetric for LowestFee {
             // scale = remaining_value_to_reach_feerate / effective_value_of_resized_input
             //
             // This should be intutive since we're finding out how to scale the input we're resizing to get the effective value we need.
-            let rate_excess = cs.rate_excess(self.target, Drain::NONE) as f32;
+            //
+            // In the perfect scenario, no additional fee would be required to pay for rounding up when converting from weight units to
+            // vbytes and so all fee calculations below are performed on weight units directly.
+            let rate_excess = cs.rate_excess_wu(self.target, Drain::NONE) as f32;
             let mut scale = Ordf32(0.0);
 
             if rate_excess < 0.0 {
@@ -150,7 +157,7 @@ impl BnbMetric for LowestFee {
             // We can use the same approach for replacement we just have to use the
             // incremental_relay_feerate.
             if let Some(replace) = self.target.fee.replace {
-                let replace_excess = cs.replacement_excess(self.target, Drain::NONE) as f32;
+                let replace_excess = cs.replacement_excess_wu(self.target, Drain::NONE) as f32;
                 if replace_excess < 0.0 {
                     let remaining_value_to_reach_feerate = replace_excess.abs();
                     let effective_value_of_resized_input =
@@ -164,8 +171,8 @@ impl BnbMetric for LowestFee {
                     }
                 }
             }
-
-            assert!(scale.0 > 0.0);
+            // `scale` could be 0 even if `is_target_met` is `false` due to the latter being based on
+            // rounded-up vbytes.
             let ideal_fee = scale.0 * to_resize.value as f32 + cs.selected_value() as f32
                 - self.target.value() as f32;
             assert!(ideal_fee >= 0.0);

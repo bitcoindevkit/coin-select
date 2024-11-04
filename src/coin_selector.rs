@@ -200,12 +200,35 @@ impl<'a> CoinSelector<'a> {
             - self.implied_fee_from_feerate(target, drain.weights) as i64
     }
 
+    /// Same as [rate_excess](Self::rate_excess) except `target.fee.rate` is applied to the
+    /// implied transaction's weight units directly without any conversion to vbytes.
+    pub fn rate_excess_wu(&self, target: Target, drain: Drain) -> i64 {
+        self.selected_value() as i64
+            - target.value() as i64
+            - drain.value as i64
+            - self.implied_fee_from_feerate_wu(target, drain.weights) as i64
+    }
+
     /// How much the current selection overshoots the value needed to satisfy RBF's rule 4.
     pub fn replacement_excess(&self, target: Target, drain: Drain) -> i64 {
         let mut replacement_excess_needed = 0;
         if let Some(replace) = target.fee.replace {
             replacement_excess_needed =
                 replace.min_fee_to_do_replacement(self.weight(target.outputs, drain.weights))
+        }
+        self.selected_value() as i64
+            - target.value() as i64
+            - drain.value as i64
+            - replacement_excess_needed as i64
+    }
+
+    /// Same as [replacement_excess](Self::replacement_excess) except the replacement fee
+    /// is calculated using weight units directly without any conversion to vbytes.
+    pub fn replacement_excess_wu(&self, target: Target, drain: Drain) -> i64 {
+        let mut replacement_excess_needed = 0;
+        if let Some(replace) = target.fee.replace {
+            replacement_excess_needed =
+                replace.min_fee_to_do_replacement_wu(self.weight(target.outputs, drain.weights))
         }
         self.selected_value() as i64
             - target.value() as i64
@@ -251,6 +274,13 @@ impl<'a> CoinSelector<'a> {
             .fee
             .rate
             .implied_fee(self.weight(target.outputs, drain_weights))
+    }
+
+    fn implied_fee_from_feerate_wu(&self, target: Target, drain_weights: DrainWeights) -> u64 {
+        target
+            .fee
+            .rate
+            .implied_fee_wu(self.weight(target.outputs, drain_weights))
     }
 
     /// The actual fee the selection would pay if it was used in a transaction that had
