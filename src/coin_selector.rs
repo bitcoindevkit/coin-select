@@ -685,7 +685,7 @@ pub struct Candidate {
 impl Candidate {
     /// Create a [`Candidate`] input that spends a single taproot keyspend output.
     pub fn new_tr_keyspend(value: u64) -> Self {
-        let weight = TXIN_BASE_WEIGHT + TR_KEYSPEND_SATISFACTION_WEIGHT;
+        let weight = TR_KEYSPEND_SATISFACTION_WEIGHT;
         Self::new(value, weight, true)
     }
 
