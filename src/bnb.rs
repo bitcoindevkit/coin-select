@@ -167,7 +167,7 @@ struct Branch<'a> {
     is_exclusion: bool,
 }
 
-impl<'a> Ord for Branch<'a> {
+impl Ord for Branch<'_> {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         // NOTE: Reverse comparision `lower_bound` because we want a min-heap (by default BinaryHeap
         // is a max-heap).
@@ -181,19 +181,19 @@ impl<'a> Ord for Branch<'a> {
     }
 }
 
-impl<'a> PartialOrd for Branch<'a> {
+impl PartialOrd for Branch<'_> {
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<'a> PartialEq for Branch<'a> {
+impl PartialEq for Branch<'_> {
     fn eq(&self, other: &Self) -> bool {
         self.lower_bound == other.lower_bound
     }
 }
 
-impl<'a> Eq for Branch<'a> {}
+impl Eq for Branch<'_> {}
 
 /// A branch and bound metric where we minimize the [`Ordf32`] score.
 ///
