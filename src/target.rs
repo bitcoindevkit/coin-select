@@ -141,4 +141,13 @@ impl Replace {
                 .incremental_relay_feerate
                 .implied_fee(replacing_tx_weight)
     }
+
+    /// Same as (min_fee_to_do_replacement)[Self::min_fee_to_do_replacement] except the additional fee
+    /// is calculated using `replacing_tx_weight` directly without any conversion to vbytes.
+    pub fn min_fee_to_do_replacement_wu(&self, replacing_tx_weight: u64) -> u64 {
+        self.fee
+            + self
+                .incremental_relay_feerate
+                .implied_fee_wu(replacing_tx_weight)
+    }
 }
