@@ -578,7 +578,7 @@ impl<'a> CoinSelector<'a> {
     }
 }
 
-impl<'a> core::fmt::Display for CoinSelector<'a> {
+impl core::fmt::Display for CoinSelector<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "[")?;
         let mut candidates = self.candidates().peekable();
@@ -619,7 +619,7 @@ impl<'a> Iterator for SelectIter<'a> {
     }
 }
 
-impl<'a> DoubleEndedIterator for SelectIter<'a> {
+impl DoubleEndedIterator for SelectIter<'_> {
     fn next_back(&mut self) -> Option<Self::Item> {
         let (index, wv) = self.cs.unselected().next_back()?;
         self.cs.select(index);
