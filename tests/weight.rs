@@ -199,3 +199,15 @@ fn legacy_three_inputs_one_segwit() {
         tx.weight().to_wu()
     );
 }
+
+#[test]
+fn new_tr_keyspend_correct_weight() {
+    // FROM https://mempool.space/tx/4936a1a4ea1a0085b9dc2a1d5b59d361f5b1b41241772f3e465153712b6d8dc0
+    let tx_bytes = hex_decode("0200000000010133356a4ad67383c8d4a822c088bb411a0c008fcdba84bf4505a0ac4cfc4e6d8c0100000000fdffffff01e0d2b50000000000160014e137b1254bc0b1f0df4c1f30bdb5e8ee88bfae6401401d69b620120db44b5441fc8630b3c4483f8fc15322c57b27ae55ad0b2e70e8bee1371fb32506288b5c430767b2e63b17dc047a101611114323058ce7fea72c6d00000000");
+    let tx = Transaction::consensus_decode(&mut tx_bytes.as_slice()).unwrap();
+
+    assert_eq!(
+        tx.input[0].segwit_weight().to_wu(),
+        Candidate::new_tr_keyspend(420).weight
+    );
+}
