@@ -162,16 +162,18 @@ match coin_selector.run_bnb(metric, 100_000) {
     }
     Ok(score) => {
         println!("we found a solution with score {}", score);
-
-        let selection = coin_selector
-            .apply_selection(&candidates)
-            .collect::<Vec<_>>();
-        let change = coin_selector.drain(target, change_policy);
-
-        println!("we selected {} inputs", selection.len());
-        println!("We are including a change output of {} value (0 means not change)", change.value);
     }
 };
+
+
+let selection = coin_selector
+   .apply_selection(&candidates)
+   .collect::<Vec<_>>();
+let change = coin_selector.drain(target, change_policy);
+
+println!("we selected {} inputs", selection.len());
+println!("We are including a change output of {} value (0 means not change)", change.value);
+
 
 ```
 

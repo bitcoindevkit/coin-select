@@ -1,4 +1,10 @@
-# Unreleased
+# 0.4.0
+
+- Use `u64` for weights instead of u32
+- Fix feerate not being rounded up to vbytes #29
+- Fix `new_tr_keyspend` weight
+
+# 0.3.0
 
 - Remove `is_target_met_with_change_policy`: it was redundant. If the target is met without a change policy it will always be met with it.
 - Remove `min_fee` in favour of `replace` which allows you to replace a transaction
