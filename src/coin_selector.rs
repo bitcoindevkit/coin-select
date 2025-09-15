@@ -2,7 +2,7 @@ use super::*;
 #[allow(unused)] // some bug in <= 1.48.0 sees this as unused when it isn't
 use crate::float::FloatExt;
 use crate::{bnb::BnbMetric, float::Ordf32, ChangePolicy, FeeRate, Target};
-use alloc::{borrow::Cow, collections::BTreeSet, vec::Vec};
+use alloc::{borrow::Cow, collections::BTreeSet};
 
 /// [`CoinSelector`] selects/deselects coins from a set of canididate coins.
 ///
@@ -16,7 +16,7 @@ pub struct CoinSelector<'a> {
     candidates: &'a [Candidate],
     selected: Cow<'a, BTreeSet<usize>>,
     banned: Cow<'a, BTreeSet<usize>>,
-    candidate_order: Cow<'a, Vec<usize>>,
+    candidate_order: Cow<'a, [usize]>,
 }
 
 impl<'a> CoinSelector<'a> {
@@ -578,6 +578,8 @@ impl<'a> CoinSelector<'a> {
     }
 }
 
+// Allow this for now due to MSRV
+#[allow(clippy::uninlined_format_args)]
 impl core::fmt::Display for CoinSelector<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "[")?;
