@@ -243,10 +243,10 @@ impl StrategyParams {
 pub fn gen_candidates(n: usize) -> Vec<Candidate> {
     let mut rng = TestRng::deterministic_rng(RngAlgorithm::ChaCha);
     core::iter::repeat_with(move || {
-        let value = rng.gen_range(1..500_001);
-        let weight = rng.gen_range(1..2001);
-        let input_count = rng.gen_range(1..3);
-        let is_segwit = rng.gen_bool(0.01);
+        let value = rng.random_range(1..500_001);
+        let weight = rng.random_range(1..2001);
+        let input_count = rng.random_range(1..3);
+        let is_segwit = rng.random_bool(0.01);
 
         Candidate {
             value,
@@ -465,11 +465,11 @@ pub fn compare_against_benchmarks<M: BnbMetric + Clone>(
 }
 
 #[allow(unused)]
-fn randomly_satisfy_target<'a>(
+fn randomly_satisfy_target<'a, R: rand::Rng>(
     cs: &CoinSelector<'a>,
     target: Target,
     change_policy: ChangePolicy,
-    rng: &mut impl RngCore,
+    rng: &mut R,
     mut metric: impl BnbMetric,
 ) -> CoinSelector<'a> {
     let mut cs = cs.clone();

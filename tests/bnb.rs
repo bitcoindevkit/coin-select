@@ -10,12 +10,12 @@ use proptest::{prelude::*, proptest, test_runner::*};
 
 fn test_wv(mut rng: impl RngCore) -> impl Iterator<Item = Candidate> {
     core::iter::repeat_with(move || {
-        let value = rng.gen_range(0..1_000);
+        let value = rng.random_range(0..1_000);
         let mut candidate = Candidate {
             value,
             weight: 100,
-            input_count: rng.gen_range(1..2),
-            is_segwit: rng.gen_bool(0.5),
+            input_count: rng.random_range(1..2),
+            is_segwit: rng.random_bool(0.5),
         };
         // HACK: set is_segwit = true for all these tests because you can't actually lower bound
         // things easily with how segwit inputs interfere with their weights. We can't modify the
@@ -100,7 +100,7 @@ fn bnb_finds_an_exact_solution_in_n_iter() {
         .last()
         .expect("it found a solution");
 
-    assert_eq!(rounds, 3150);
+    assert_eq!(rounds, 3194);
     assert_eq!(best.input_weight(), solution_weight);
     assert_eq!(best.selected_value(), target_value, "score={:?}", score);
 }
@@ -134,9 +134,9 @@ fn bnb_finds_solution_if_possible_in_n_iter() {
         .last()
         .expect("found a solution");
 
-    assert_eq!(rounds, 193);
+    assert_eq!(rounds, 164);
     let excess = sol.excess(target, Drain::NONE);
-    assert_eq!(excess, 1);
+    assert_eq!(excess, 0);
 }
 
 proptest! {

@@ -21,6 +21,6 @@ default = ["std"]
 std = []
 
 [dev-dependencies]
-rand = "0.8"
-proptest = "1.4"
+rand = "0.9"
+proptest = "1.7"
 bitcoin = "0.32"
