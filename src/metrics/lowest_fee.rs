@@ -32,8 +32,9 @@ impl BnbMetric for LowestFee {
             let drain = cs.drain(self.target, self.change_policy);
             let fee_for_the_tx = cs.fee(self.target.value(), drain.value);
             assert!(
-                fee_for_the_tx > 0,
-                "must not be called unless selection has met target"
+                fee_for_the_tx >= 0,
+                "must not be called unless selection has met target: fee={}",
+                fee_for_the_tx
             );
             // `spend_fee` rounds up here. We could use floats but I felt it was just better to
             // accept the extra 1 sat penality to having a change output

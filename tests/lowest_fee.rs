@@ -267,3 +267,55 @@ fn adding_another_input_to_remove_change() {
     assert!(score <= best_solution_score);
     assert_eq!(cs.selected_indices(), best_solution.selected_indices());
 }
+
+#[test]
+fn zero_fee_tx() {
+    let target_feerate = FeeRate::ZERO;
+    let long_term_feerate = FeeRate::DEFAULT_MIN_RELAY;
+
+    let target = Target {
+        fee: TargetFee {
+            rate: target_feerate,
+            replace: None,
+        },
+        outputs: TargetOutputs {
+            value_sum: 99_870,
+            weight_sum: 200 - TX_FIXED_FIELD_WEIGHT - 1,
+            n_outputs: 1,
+        },
+    };
+
+    let candidates = vec![
+        Candidate {
+            value: 100_000,
+            weight: 100,
+            input_count: 1,
+            is_segwit: true,
+        },
+        Candidate {
+            value: 50_000,
+            weight: 100,
+            input_count: 1,
+            is_segwit: true,
+        },
+    ];
+
+    let drain_weights = DrainWeights {
+        output_weight: 100,
+        spend_weight: 1_000,
+        n_outputs: 1,
+    };
+
+    let mut cs = CoinSelector::new(&candidates);
+    let metric = LowestFee {
+        target,
+        long_term_feerate,
+        change_policy: ChangePolicy::min_value_and_waste(
+            drain_weights,
+            50,
+            target_feerate,
+            long_term_feerate,
+        ),
+    };
+    let (_score, _rounds) = common::bnb_search(&mut cs, metric, 1000).expect("must find solution");
+}
