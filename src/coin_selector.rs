@@ -17,6 +17,7 @@ pub struct CoinSelector<'a> {
     selected: Cow<'a, BTreeSet<usize>>,
     banned: Cow<'a, BTreeSet<usize>>,
     candidate_order: Cow<'a, [usize]>,
+    package: Option<Package>,
 }
 
 impl<'a> CoinSelector<'a> {
@@ -37,7 +38,53 @@ impl<'a> CoinSelector<'a> {
             selected: Cow::Owned(Default::default()),
             banned: Cow::Owned(Default::default()),
             candidate_order: Cow::Owned((0..candidates.len()).collect()),
+            package: None,
         }
+    }
+
+    /// Configures package-aware coin selection for CPFP (Child Pays for Parent) scenarios.
+    ///
+    /// When you need to bump the feerate of unconfirmed parent transactions, this method lets you
+    /// specify the parent context and which candidates link to those parents.
+    ///
+    /// `package` describes the aggregate fee and weight of the parent transactions.
+    /// `link_indices` are the indices of candidates that spend outputs from the parent
+    /// transactions. These will be automatically selected since they must be included to create
+    /// the child relationship.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use bdk_coin_select::*;
+    /// // Parent tx has 200 sats fee and 400 weight units
+    /// let package = Package { parent_fee: 200, parent_weight: 400 };
+    ///
+    /// // Candidate at index 0 spends from the parent
+    /// # let candidates = vec![Candidate::new_tr_keyspend(10_000)];
+    /// let selector = CoinSelector::new(&candidates).with_package(package, [0]);
+    ///
+    /// // Index 0 is now selected
+    /// assert!(selector.is_selected(0));
+    /// ```
+    pub fn with_package(
+        mut self,
+        package: Package,
+        link_indices: impl IntoIterator<Item = usize>,
+    ) -> Self {
+        self.package = Some(package);
+        for index in link_indices {
+            self.select(index);
+        }
+        self
+    }
+
+    /// Returns the package context if set.
+    ///
+    /// See [`with_package`] for more information on package-aware coin selection.
+    ///
+    /// [`with_package`]: Self::with_package
+    pub fn package(&self) -> Option<Package> {
+        self.package
     }
 
     /// Iterate over all the candidates in their currently sorted order. Each item has the original
@@ -164,9 +211,29 @@ impl<'a> CoinSelector<'a> {
 
     /// Current weight of transaction implied by the selection.
     ///
+    /// When a [`Package`] is set, this includes the parent transaction weight. Use
+    /// [`weight_without_package`] if you need the child transaction weight only.
+    ///
     /// If you don't have any drain outputs (only target outputs) just set drain_weights to
     /// [`DrainWeights::NONE`].
+    ///
+    /// [`weight_without_package`]: Self::weight_without_package
     pub fn weight(&self, target_ouputs: TargetOutputs, drain_weight: DrainWeights) -> u64 {
+        let child_weight = self.weight_without_package(target_ouputs, drain_weight);
+        match self.package {
+            Some(pkg) => child_weight + pkg.parent_weight,
+            None => child_weight,
+        }
+    }
+
+    /// Weight of the child transaction only, excluding any package parent weight.
+    ///
+    /// This is useful for RBF calculations where constraints apply to the child transaction only.
+    pub fn weight_without_package(
+        &self,
+        target_ouputs: TargetOutputs,
+        drain_weight: DrainWeights,
+    ) -> u64 {
         TX_FIXED_FIELD_WEIGHT
             + self.input_weight()
             + target_ouputs.output_weight_with_drain(drain_weight)
@@ -210,11 +277,18 @@ impl<'a> CoinSelector<'a> {
     }
 
     /// How much the current selection overshoots the value needed to satisfy RBF's rule 4.
+    ///
+    /// Note: RBF constraints apply to the child transaction only, so this method uses
+    /// [`weight_without_package`] even when a package is set.
+    ///
+    /// [`weight_without_package`]: Self::weight_without_package
     pub fn replacement_excess(&self, target: Target, drain: Drain) -> i64 {
         let mut replacement_excess_needed = 0;
         if let Some(replace) = target.fee.replace {
-            replacement_excess_needed =
-                replace.min_fee_to_do_replacement(self.weight(target.outputs, drain.weights))
+            // RBF rule 4 applies to the child transaction only
+            replacement_excess_needed = replace.min_fee_to_do_replacement(
+                self.weight_without_package(target.outputs, drain.weights),
+            )
         }
         self.selected_value() as i64
             - target.value() as i64
@@ -227,8 +301,10 @@ impl<'a> CoinSelector<'a> {
     pub fn replacement_excess_wu(&self, target: Target, drain: Drain) -> i64 {
         let mut replacement_excess_needed = 0;
         if let Some(replace) = target.fee.replace {
-            replacement_excess_needed =
-                replace.min_fee_to_do_replacement_wu(self.weight(target.outputs, drain.weights))
+            // RBF rule 4 applies to the child transaction only
+            replacement_excess_needed = replace.min_fee_to_do_replacement_wu(
+                self.weight_without_package(target.outputs, drain.weights),
+            )
         }
         self.selected_value() as i64
             - target.value() as i64
@@ -239,15 +315,19 @@ impl<'a> CoinSelector<'a> {
     /// The feerate the transaction would have if we were to use this selection of inputs to achieve
     /// the `target`'s value and weight. It is essentially telling you what target feerate you currently have.
     ///
+    /// When a [`Package`] is set, this returns the package feerate:
+    /// `(parent_fee + child_fee) / (parent_weight + child_weight)`.
+    ///
     /// Returns `None` if the feerate would be negative or infinity.
     pub fn implied_feerate(&self, target_outputs: TargetOutputs, drain: Drain) -> Option<FeeRate> {
-        let numerator =
-            self.selected_value() as i64 - target_outputs.value_sum as i64 - drain.value as i64;
-        let denom = self.weight(target_outputs, drain.weights);
-        if numerator < 0 || denom == 0 {
+        let total_fee = self.fee(target_outputs.value_sum, drain.value);
+        let total_weight = self.weight(target_outputs, drain.weights);
+        if total_fee < 0 || total_weight == 0 {
             return None;
         }
-        Some(FeeRate::from_sat_per_wu(numerator as f32 / denom as f32))
+        Some(FeeRate::from_sat_per_wu(
+            total_fee as f32 / total_weight as f32,
+        ))
     }
 
     /// The fee the current selection and `drain_weight` should pay to satisfy `target_fee`.
@@ -286,8 +366,25 @@ impl<'a> CoinSelector<'a> {
     /// The actual fee the selection would pay if it was used in a transaction that had
     /// `target_value` value for outputs and change output of `drain_value`.
     ///
+    /// When a [`Package`] is set, this includes the parent transaction fee. Use
+    /// [`fee_without_package`] if you need the child transaction fee only.
+    ///
     /// This can be negative when the selection is invalid (outputs are greater than inputs).
+    ///
+    /// [`fee_without_package`]: Self::fee_without_package
     pub fn fee(&self, target_value: u64, drain_value: u64) -> i64 {
+        let child_fee = self.fee_without_package(target_value, drain_value);
+        match self.package {
+            Some(pkg) => child_fee + pkg.parent_fee as i64,
+            None => child_fee,
+        }
+    }
+
+    /// Fee of the child transaction only, excluding any package parent fee.
+    ///
+    /// This is useful when you need to know what the child transaction actually pays,
+    /// separate from the package context.
+    pub fn fee_without_package(&self, target_value: u64, drain_value: u64) -> i64 {
         self.selected_value() as i64 - target_value as i64 - drain_value as i64
     }
 

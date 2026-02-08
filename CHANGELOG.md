@@ -1,3 +1,13 @@
+# Unreleased
+
+- Add package-aware coin selection for CPFP (Child Pays for Parent) scenarios
+  - New `Package` struct to specify parent transaction fee and weight
+  - `CoinSelector::with_package()` to configure package context and auto-select linking inputs
+  - `weight()` and `fee()` now include parent context when package is set
+  - New `weight_without_package()` and `fee_without_package()` for child-only values
+  - `implied_feerate()` returns package feerate when package is set
+  - RBF calculations correctly use child weight only
+
 # 0.4.0
 
 - Use `u64` for weights instead of u32

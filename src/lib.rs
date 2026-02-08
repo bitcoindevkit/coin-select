@@ -26,6 +26,8 @@ mod target;
 pub use target::*;
 mod drain;
 pub use drain::*;
+mod package;
+pub use package::*;
 
 /// Txin "base" fields include `outpoint` (32+4) and `nSequence` (4) and 1 byte for the scriptSig
 /// length.
