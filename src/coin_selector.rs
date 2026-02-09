@@ -832,3 +832,175 @@ impl Candidate {
         self.implied_fee(feerate) / self.value as f32
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use alloc::vec::Vec;
+
+    /// Helper to create a simple test setup
+    fn test_setup() -> (Vec<Candidate>, TargetOutputs, DrainWeights) {
+        let candidates = vec![
+            Candidate::new_tr_keyspend(100_000),
+            Candidate::new_tr_keyspend(50_000),
+        ];
+        let target_outputs = TargetOutputs {
+            value_sum: 80_000,
+            weight_sum: 200,
+            n_outputs: 1,
+        };
+        let drain_weights = DrainWeights::NONE;
+        (candidates, target_outputs, drain_weights)
+    }
+
+    #[test]
+    fn weight_includes_parent_weight_when_package_set() {
+        let (candidates, target_outputs, drain_weights) = test_setup();
+        let package = Package {
+            parent_fee: 500,
+            parent_weight: 400,
+        };
+
+        let selector_without = CoinSelector::new(&candidates);
+        let selector_with = CoinSelector::new(&candidates).with_package(package, []);
+
+        let child_weight = selector_without.weight(target_outputs, drain_weights);
+        let package_weight = selector_with.weight(target_outputs, drain_weights);
+
+        assert_eq!(package_weight, child_weight + 400);
+    }
+
+    #[test]
+    fn weight_without_package_returns_child_only() {
+        let (candidates, target_outputs, drain_weights) = test_setup();
+        let package = Package {
+            parent_fee: 500,
+            parent_weight: 400,
+        };
+
+        let selector = CoinSelector::new(&candidates).with_package(package, []);
+
+        let child_weight = selector.weight_without_package(target_outputs, drain_weights);
+        let package_weight = selector.weight(target_outputs, drain_weights);
+
+        assert_eq!(package_weight, child_weight + 400);
+    }
+
+    #[test]
+    fn fee_includes_parent_fee_when_package_set() {
+        let (candidates, ..) = test_setup();
+        let package = Package {
+            parent_fee: 500,
+            parent_weight: 400,
+        };
+
+        let mut selector_without = CoinSelector::new(&candidates);
+        selector_without.select(0); // Select first candidate (100_000 sats)
+
+        let mut selector_with = CoinSelector::new(&candidates).with_package(package, []);
+        selector_with.select(0);
+
+        let target_value = 80_000;
+        let drain_value = 0;
+
+        let child_fee = selector_without.fee(target_value, drain_value);
+        let package_fee = selector_with.fee(target_value, drain_value);
+
+        // child_fee = 100_000 - 80_000 = 20_000
+        assert_eq!(child_fee, 20_000);
+        // package_fee = child_fee + parent_fee = 20_000 + 500 = 20_500
+        assert_eq!(package_fee, child_fee + 500);
+    }
+
+    #[test]
+    fn fee_without_package_returns_child_only() {
+        let (candidates, ..) = test_setup();
+        let package = Package {
+            parent_fee: 500,
+            parent_weight: 400,
+        };
+
+        let mut selector = CoinSelector::new(&candidates).with_package(package, []);
+        selector.select(0);
+
+        let target_value = 80_000;
+        let drain_value = 0;
+
+        let child_fee = selector.fee_without_package(target_value, drain_value);
+        let package_fee = selector.fee(target_value, drain_value);
+
+        assert_eq!(child_fee, 20_000);
+        assert_eq!(package_fee, child_fee + 500);
+    }
+
+    #[test]
+    fn implied_feerate_returns_package_feerate() {
+        let (candidates, target_outputs, ..) = test_setup();
+        let package = Package {
+            parent_fee: 500,
+            parent_weight: 400,
+        };
+
+        let mut selector = CoinSelector::new(&candidates).with_package(package, []);
+        selector.select(0);
+
+        let drain = Drain::NONE;
+        let feerate = selector.implied_feerate(target_outputs, drain).unwrap();
+
+        // package_fee = 20_000 (child) + 500 (parent) = 20_500
+        // package_weight = child_weight + 400
+        let child_weight = selector.weight_without_package(target_outputs, drain.weights);
+        let expected_feerate = 20_500.0 / (child_weight + 400) as f32;
+
+        assert!((feerate.spwu() - expected_feerate).abs() < 0.001);
+    }
+
+    #[test]
+    fn package_accessor_returns_package() {
+        let (candidates, ..) = test_setup();
+        let package = Package {
+            parent_fee: 500,
+            parent_weight: 400,
+        };
+
+        let selector_without = CoinSelector::new(&candidates);
+        let selector_with = CoinSelector::new(&candidates).with_package(package, []);
+
+        assert!(selector_without.package().is_none());
+        assert_eq!(selector_with.package(), Some(package));
+    }
+
+    #[test]
+    fn with_package_auto_selects_link_indices() {
+        let (candidates, ..) = test_setup();
+        let package = Package {
+            parent_fee: 500,
+            parent_weight: 400,
+        };
+
+        let selector = CoinSelector::new(&candidates).with_package(package, [0, 1]);
+
+        assert!(selector.is_selected(0));
+        assert!(selector.is_selected(1));
+    }
+
+    #[test]
+    fn no_package_behaves_normally() {
+        let (candidates, target_outputs, drain_weights) = test_setup();
+
+        let mut selector = CoinSelector::new(&candidates);
+        selector.select(0);
+
+        // weight() and weight_without_package() should be equal
+        assert_eq!(
+            selector.weight(target_outputs, drain_weights),
+            selector.weight_without_package(target_outputs, drain_weights)
+        );
+
+        // fee() and fee_without_package() should be equal
+        assert_eq!(
+            selector.fee(80_000, 0),
+            selector.fee_without_package(80_000, 0)
+        );
+    }
+}
