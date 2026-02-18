@@ -277,6 +277,7 @@ fn zero_fee_tx() {
         fee: TargetFee {
             rate: target_feerate,
             replace: None,
+            ..TargetFee::ZERO
         },
         outputs: TargetOutputs {
             value_sum: 99_870,

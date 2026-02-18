@@ -81,8 +81,10 @@ impl TargetOutputs {
 /// [RBF rule 4]: https://github.com/bitcoin/bitcoin/blob/master/doc/policy/mempool-replacements.md#current-replace-by-fee-policy
 /// [`ChangePolicy`]: crate::ChangePolicy
 pub struct TargetFee {
-    /// The feerate the transaction must have
+    /// The minimum feerate the transaction must have.
     pub rate: FeeRate,
+    /// The minimum absolute fee the transaction must have.
+    pub absolute: u64,
     /// The fee must enough enough to replace this
     pub replace: Option<Replace>,
 }
@@ -92,15 +94,16 @@ impl Default for TargetFee {
     fn default() -> Self {
         Self {
             rate: FeeRate::DEFAULT_MIN_RELAY,
-            replace: None,
+            ..Self::ZERO
         }
     }
 }
 
 impl TargetFee {
-    /// A target fee of 0 sats per vbyte (and no replacement)
+    /// A target fee of 0 sats per vbyte, 0 absolute fee (and no replacement)
     pub const ZERO: Self = TargetFee {
         rate: FeeRate::ZERO,
+        absolute: 0,
         replace: None,
     };
 
@@ -108,7 +111,7 @@ impl TargetFee {
     pub fn from_feerate(feerate: FeeRate) -> Self {
         Self {
             rate: feerate,
-            replace: None,
+            ..Self::ZERO
         }
     }
 }
