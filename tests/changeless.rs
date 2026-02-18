@@ -96,4 +96,26 @@ proptest! {
         }
         dbg!(start.elapsed());
     }
+
+    #[test]
+    #[cfg(not(debug_assertions))] // too slow if compiling for debug
+    fn ensure_bound_is_not_too_tight(
+        n_candidates in 0..15_usize,        // candidates (n)
+        target_value in 500..500_000_u64,   // target value (sats)
+        n_target_outputs in 1usize..150,    // the number of outputs we're funding
+        target_weight in 0..10_000_u32,         // the sum of the weight of the outputs (wu)
+        replace in common::maybe_replace(0u64..10_000), // The weight of the transaction we're replacing
+        feerate in 1.0..100.0_f32,          // feerate (sats/vb)
+        feerate_lt_diff in -5.0..50.0_f32,  // longterm feerate diff (sats/vb)
+        drain_weight in 100..=500_u32,      // drain weight (wu)
+        drain_spend_weight in 1..=2000_u32, // drain spend weight (wu)
+        drain_dust in 100..=1000_u64,       // drain dust (sats)
+        n_drain_outputs in 1usize..150,     // the number of drain outputs
+    ) {
+        let params = common::StrategyParams { n_candidates, target_value, n_target_outputs, target_weight, replace, feerate, feerate_lt_diff, drain_weight, drain_spend_weight, drain_dust, n_drain_outputs };
+        let candidates = common::gen_candidates(params.n_candidates);
+        let change_policy = ChangePolicy::min_value(params.drain_weights(), params.drain_dust);
+        let metric = Changeless { target: params.target(), change_policy };
+        common::ensure_bound_is_not_too_tight(params, candidates, change_policy, metric)?;
+    }
 }
