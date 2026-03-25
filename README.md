@@ -39,7 +39,8 @@ let candidates = vec![
         weight: TR_KEYSPEND_TXIN_WEIGHT,
         // wether it's a segwit input. Needed so we know whether to include the
         // segwit header in total weight calculations.
-        is_segwit: true
+        is_segwit: true,
+        ancestor_bump_fee: 0
     },
     Candidate {
         // A candidate can represent multiple inputs in the case where you 
@@ -47,7 +48,8 @@ let candidates = vec![
         input_count: 2,
         weight: 2*TR_KEYSPEND_TXIN_WEIGHT,
         value: 3_000_000,
-        is_segwit: true
+        is_segwit: true,
+        ancestor_bump_fee: 0
     }
 ];
 
@@ -106,19 +108,22 @@ let candidates = [
         input_count: 1,
         value: 400_000,
         weight: TR_KEYSPEND_TXIN_WEIGHT,
-        is_segwit: true
+        is_segwit: true,
+        ancestor_bump_fee: 0
     },
     Candidate {
         input_count: 1,
         value: 200_000,
         weight: TR_KEYSPEND_TXIN_WEIGHT,
-        is_segwit: true
+        is_segwit: true,
+        ancestor_bump_fee: 0
     },
     Candidate {
         input_count: 1,
         value: 11_000,
         weight: TR_KEYSPEND_TXIN_WEIGHT,
-        is_segwit: true
+        is_segwit: true,
+        ancestor_bump_fee: 0
     }
 ];
 let drain_weights = bdk_coin_select::DrainWeights::default();
