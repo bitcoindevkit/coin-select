@@ -198,6 +198,7 @@ impl<'a> CoinSelector<'a> {
             - target.value() as i64
             - drain.value as i64
             - self.implied_fee_from_feerate(target, drain.weights) as i64
+            - self.selected_ancestor_bump_fee() as i64
     }
 
     /// Same as [rate_excess](Self::rate_excess) except `target.fee.rate` is applied to the
@@ -207,6 +208,7 @@ impl<'a> CoinSelector<'a> {
             - target.value() as i64
             - drain.value as i64
             - self.implied_fee_from_feerate_wu(target, drain.weights) as i64
+            - self.selected_ancestor_bump_fee() as i64
     }
 
     /// How much the current selection overshoots the value needed to satisfy RBF's rule 4.
@@ -220,6 +222,7 @@ impl<'a> CoinSelector<'a> {
             - target.value() as i64
             - drain.value as i64
             - replacement_excess_needed as i64
+            - self.selected_ancestor_bump_fee() as i64
     }
 
     /// Same as [replacement_excess](Self::replacement_excess) except the replacement fee
@@ -234,6 +237,7 @@ impl<'a> CoinSelector<'a> {
             - target.value() as i64
             - drain.value as i64
             - replacement_excess_needed as i64
+            - self.selected_ancestor_bump_fee() as i64
     }
 
     /// The feerate the transaction would have if we were to use this selection of inputs to achieve
@@ -576,6 +580,14 @@ impl<'a> CoinSelector<'a> {
         *self = selector;
         Ok(score)
     }
+
+    /// Total ancestor bump fee across all selected candidates.
+    pub fn selected_ancestor_bump_fee(&self) -> u64 {
+        self.selected
+            .iter()
+            .map(|&index| self.candidates[index].ancestor_bump_fee)
+            .sum()
+    }
 }
 
 // Allow this for now due to MSRV
@@ -682,6 +694,11 @@ pub struct Candidate {
     pub input_count: usize,
     /// Whether this [`Candidate`] contains at least one segwit spend.
     pub is_segwit: bool,
+    /// Additional fee (in satoshis) the child must pay to bring this
+    /// candidate's unconfirmed ancestors up to the target feerate.
+    ///
+    /// Defaults to `0` for confirmed UTXOs.
+    pub ancestor_bump_fee: u64,
 }
 
 impl Candidate {
@@ -702,12 +719,13 @@ impl Candidate {
             weight,
             input_count: 1,
             is_segwit,
+            ancestor_bump_fee: 0,
         }
     }
 
-    /// Effective value of this input candidate: `actual_value - input_weight * feerate (sats/wu)`.
+    /// Effective value after accounting for input weight and ancestor bump fee.
     pub fn effective_value(&self, feerate: FeeRate) -> f32 {
-        self.value as f32 - (self.weight as f32 * feerate.spwu())
+        self.value as f32 - (self.weight as f32 * feerate.spwu()) - self.ancestor_bump_fee as f32
     }
 
     /// Value per weight unit
