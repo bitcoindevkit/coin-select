@@ -214,6 +214,7 @@ impl StrategyParams {
             fee: TargetFee {
                 rate: FeeRate::from_sat_per_vb(self.feerate),
                 replace: self.replace,
+                ..TargetFee::ZERO
             },
             outputs: TargetOutputs {
                 value_sum: self.target_value,

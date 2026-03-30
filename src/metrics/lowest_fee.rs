@@ -172,6 +172,20 @@ impl BnbMetric for LowestFee {
                     }
                 }
             }
+            // Handle absolute fee constraint. Unlike feerate and replacement, the
+            // absolute fee is a fixed amount (not weight-proportional), so we just
+            // need enough raw value to cover the gap.
+            let absolute_excess = cs.absolute_excess(self.target, Drain::NONE) as f32;
+            if absolute_excess < 0.0 {
+                let remaining = absolute_excess.abs();
+                if to_resize.value > 0 {
+                    let absolute_scale = remaining / to_resize.value as f32;
+                    scale = scale.max(Ordf32(absolute_scale));
+                } else {
+                    return None; // we can never satisfy the constraint
+                }
+            }
+
             // `scale` could be 0 even if `is_target_met` is `false` due to the latter being based on
             // rounded-up vbytes.
             let ideal_fee = scale.0 * to_resize.value as f32 + cs.selected_value() as f32
