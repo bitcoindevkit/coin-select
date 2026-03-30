@@ -16,6 +16,7 @@ fn test_wv(mut rng: impl RngCore) -> impl Iterator<Item = Candidate> {
             weight: 100,
             input_count: rng.random_range(1..2),
             is_segwit: rng.random_bool(0.5),
+            ancestors: vec![],
         };
         // HACK: set is_segwit = true for all these tests because you can't actually lower bound
         // things easily with how segwit inputs interfere with their weights. We can't modify the

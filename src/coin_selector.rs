@@ -2,7 +2,19 @@ use super::*;
 #[allow(unused)] // some bug in <= 1.48.0 sees this as unused when it isn't
 use crate::float::FloatExt;
 use crate::{bnb::BnbMetric, float::Ordf32, ChangePolicy, FeeRate, Target};
-use alloc::{borrow::Cow, collections::BTreeSet};
+use alloc::{borrow::Cow, collections::BTreeSet, vec::Vec};
+
+/// An unconfirmed ancestor transaction that may need a fee bump (CPFP).
+///
+/// When spending unconfirmed UTXOs, miners evaluate the transaction as a package with its
+/// unconfirmed ancestors. If ancestors paid below the target feerate, the child must overpay.
+#[derive(Debug, Clone, Copy)]
+pub struct UnconfirmedAncestor {
+    /// The weight of the ancestor transaction in weight units.
+    pub weight: u64,
+    /// The fee already paid by the ancestor transaction in satoshis.
+    pub fee_paid: u64,
+}
 
 /// [`CoinSelector`] selects/deselects coins from a set of canididate coins.
 ///
@@ -14,6 +26,7 @@ use alloc::{borrow::Cow, collections::BTreeSet};
 #[derive(Debug, Clone)]
 pub struct CoinSelector<'a> {
     candidates: &'a [Candidate],
+    ancestors: &'a [UnconfirmedAncestor],
     selected: Cow<'a, BTreeSet<usize>>,
     banned: Cow<'a, BTreeSet<usize>>,
     candidate_order: Cow<'a, [usize]>,
@@ -34,26 +47,35 @@ impl<'a> CoinSelector<'a> {
     pub fn new(candidates: &'a [Candidate]) -> Self {
         Self {
             candidates,
+            ancestors: &[],
             selected: Cow::Owned(Default::default()),
             banned: Cow::Owned(Default::default()),
             candidate_order: Cow::Owned((0..candidates.len()).collect()),
         }
     }
 
+    /// Set the shared ancestor data for CPFP bump fee calculations.
+    ///
+    /// Each [`Candidate`]'s `ancestors` field contains indices into this slice.
+    pub fn with_ancestors(mut self, ancestors: &'a [UnconfirmedAncestor]) -> Self {
+        self.ancestors = ancestors;
+        self
+    }
+
     /// Iterate over all the candidates in their currently sorted order. Each item has the original
     /// index with the candidate.
     pub fn candidates(
         &self,
-    ) -> impl DoubleEndedIterator<Item = (usize, Candidate)> + ExactSizeIterator + '_ {
+    ) -> impl DoubleEndedIterator<Item = (usize, &Candidate)> + ExactSizeIterator + '_ {
         self.candidate_order
             .iter()
-            .map(move |i| (*i, self.candidates[*i]))
+            .map(move |i| (*i, &self.candidates[*i]))
     }
 
     /// Get the candidate at `index`. `index` refers to its position in the original `candidates`
     /// slice passed into [`CoinSelector::new`].
-    pub fn candidate(&self, index: usize) -> Candidate {
-        self.candidates[index]
+    pub fn candidate(&self, index: usize) -> &Candidate {
+        &self.candidates[index]
     }
 
     /// Deselect a candidate at `index`. `index` refers to its position in the original `candidates`
@@ -172,6 +194,36 @@ impl<'a> CoinSelector<'a> {
             + target_ouputs.output_weight_with_drain(drain_weight)
     }
 
+    /// Compute the package-level ancestor bump fee for the current selection at the given feerate.
+    ///
+    /// This collects unique ancestor indices across all selected candidates, sums their weights
+    /// and fees, then computes `max(0, implied_fee(total_weight, feerate) - total_fees)`.
+    ///
+    /// High-feerate ancestors subsidize low-feerate ones within the package (matching Bitcoin
+    /// Core's package relay approach).
+    pub fn selected_ancestor_bump_fee(&self, feerate: FeeRate) -> u64 {
+        if self.ancestors.is_empty() {
+            return 0;
+        }
+        let mut indices: Vec<usize> = self
+            .selected
+            .iter()
+            .flat_map(|&i| self.candidates[i].ancestors.iter().copied())
+            .collect();
+        indices.sort_unstable();
+        indices.dedup();
+
+        let mut total_weight = 0u64;
+        let mut total_fee_paid = 0u64;
+        for anc_index in indices {
+            let anc = &self.ancestors[anc_index];
+            total_weight += anc.weight;
+            total_fee_paid += anc.fee_paid;
+        }
+        let implied = feerate.implied_fee(total_weight);
+        implied.saturating_sub(total_fee_paid)
+    }
+
     /// How much the current selection overshoots the value needed to achieve `target`.
     ///
     /// In order for the resulting transaction to be valid this must be 0 or above. If it's above 0
@@ -199,6 +251,7 @@ impl<'a> CoinSelector<'a> {
             - target.value() as i64
             - drain.value as i64
             - self.implied_fee_from_feerate(target, drain.weights) as i64
+            - self.selected_ancestor_bump_fee(target.fee.rate) as i64
     }
 
     /// Same as [rate_excess](Self::rate_excess) except `target.fee.rate` is applied to the
@@ -208,6 +261,7 @@ impl<'a> CoinSelector<'a> {
             - target.value() as i64
             - drain.value as i64
             - self.implied_fee_from_feerate_wu(target, drain.weights) as i64
+            - self.selected_ancestor_bump_fee(target.fee.rate) as i64
     }
 
     /// How much the current selection overshoots the value needed to satisfy `target.fee.absolute`
@@ -230,6 +284,7 @@ impl<'a> CoinSelector<'a> {
             - target.value() as i64
             - drain.value as i64
             - replacement_excess_needed as i64
+            - self.selected_ancestor_bump_fee(target.fee.rate) as i64
     }
 
     /// Same as [replacement_excess](Self::replacement_excess) except the replacement fee
@@ -244,6 +299,7 @@ impl<'a> CoinSelector<'a> {
             - target.value() as i64
             - drain.value as i64
             - replacement_excess_needed as i64
+            - self.selected_ancestor_bump_fee(target.fee.rate) as i64
     }
 
     /// The feerate the transaction would have if we were to use this selection of inputs to achieve
@@ -304,8 +360,11 @@ impl<'a> CoinSelector<'a> {
     }
 
     /// The value of the current selected inputs minus the fee needed to pay for the selected inputs
+    /// and any ancestor bump fee.
     pub fn effective_value(&self, feerate: FeeRate) -> i64 {
-        self.selected_value() as i64 - (self.input_weight() as f32 * feerate.spwu()).ceil() as i64
+        self.selected_value() as i64
+            - (self.input_weight() as f32 * feerate.spwu()).ceil() as i64
+            - self.selected_ancestor_bump_fee(feerate) as i64
     }
 
     // /// Waste sum of all selected inputs.
@@ -324,11 +383,11 @@ impl<'a> CoinSelector<'a> {
     /// [`unselected`]: CoinSelector::unselected
     pub fn sort_candidates_by<F>(&mut self, mut cmp: F)
     where
-        F: FnMut((usize, Candidate), (usize, Candidate)) -> core::cmp::Ordering,
+        F: FnMut((usize, &Candidate), (usize, &Candidate)) -> core::cmp::Ordering,
     {
         let order = self.candidate_order.to_mut();
         let candidates = &self.candidates;
-        order.sort_by(|a, b| cmp((*a, candidates[*a]), (*b, candidates[*b])))
+        order.sort_by(|a, b| cmp((*a, &candidates[*a]), (*b, &candidates[*b])))
     }
 
     /// Sorts the candidates by the key function.
@@ -342,10 +401,10 @@ impl<'a> CoinSelector<'a> {
     /// [`unselected`]: CoinSelector::unselected
     pub fn sort_candidates_by_key<F, K>(&mut self, mut key_fn: F)
     where
-        F: FnMut((usize, Candidate)) -> K,
+        F: FnMut((usize, &Candidate)) -> K,
         K: Ord,
     {
-        self.sort_candidates_by(|a, b| key_fn(a).cmp(&key_fn(b)))
+        self.sort_candidates_by(|a, b| key_fn(a).cmp(&key_fn(b)));
     }
 
     /// Sorts the candidates by descending value per weight unit, tie-breaking with value.
@@ -391,10 +450,10 @@ impl<'a> CoinSelector<'a> {
     /// The selected candidates with their index.
     pub fn selected(
         &self,
-    ) -> impl ExactSizeIterator<Item = (usize, Candidate)> + DoubleEndedIterator + '_ {
+    ) -> impl ExactSizeIterator<Item = (usize, &Candidate)> + DoubleEndedIterator + '_ {
         self.selected
             .iter()
-            .map(move |&index| (index, self.candidates[index]))
+            .map(move |&index| (index, &self.candidates[index]))
     }
 
     /// The unselected candidates with their index.
@@ -402,9 +461,9 @@ impl<'a> CoinSelector<'a> {
     /// The candidates are returned in sorted order. See [`sort_candidates_by`].
     ///
     /// [`sort_candidates_by`]: Self::sort_candidates_by
-    pub fn unselected(&self) -> impl DoubleEndedIterator<Item = (usize, Candidate)> + '_ {
+    pub fn unselected(&self) -> impl DoubleEndedIterator<Item = (usize, &Candidate)> + '_ {
         self.unselected_indices()
-            .map(move |i| (i, self.candidates[i]))
+            .map(move |i| (i, &self.candidates[i]))
     }
 
     /// The indices of the selelcted candidates.
@@ -624,20 +683,23 @@ pub struct SelectIter<'a> {
 }
 
 impl<'a> Iterator for SelectIter<'a> {
-    type Item = (CoinSelector<'a>, usize, Candidate);
+    type Item = (CoinSelector<'a>, usize, &'a Candidate);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let (index, wv) = self.cs.unselected().next()?;
+        let index = self.cs.unselected_indices().next()?;
+        // Access the underlying slice directly to get the `'a` lifetime.
+        let candidates: &'a [Candidate] = self.cs.candidates;
         self.cs.select(index);
-        Some((self.cs.clone(), index, wv))
+        Some((self.cs.clone(), index, &candidates[index]))
     }
 }
 
-impl DoubleEndedIterator for SelectIter<'_> {
+impl<'a> DoubleEndedIterator for SelectIter<'a> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        let (index, wv) = self.cs.unselected().next_back()?;
+        let index = self.cs.unselected_indices().next_back()?;
+        let candidates: &'a [Candidate] = self.cs.candidates;
         self.cs.select(index);
-        Some((self.cs.clone(), index, wv))
+        Some((self.cs.clone(), index, &candidates[index]))
     }
 }
 
@@ -682,7 +744,7 @@ impl std::error::Error for NoBnbSolution {}
 /// A `Candidate` represents an input candidate for [`CoinSelector`].
 ///
 /// This can either be a single UTXO, or a group of UTXOs that should be spent together.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Candidate {
     /// Total value of the UTXO(s) that this [`Candidate`] represents.
     pub value: u64,
@@ -694,6 +756,12 @@ pub struct Candidate {
     pub input_count: usize,
     /// Whether this [`Candidate`] contains at least one segwit spend.
     pub is_segwit: bool,
+    /// Indices into the shared [`UnconfirmedAncestor`] slice (passed to
+    /// [`CoinSelector::with_ancestors`]) that this candidate depends on.
+    ///
+    /// When multiple candidates share ancestors, those ancestors are automatically deduplicated
+    /// during bump fee computation.
+    pub ancestors: Vec<usize>,
 }
 
 impl Candidate {
@@ -707,13 +775,14 @@ impl Candidate {
     ///
     /// `satisfaction_weight` is the weight of `scriptSigLen + scriptSig + scriptWitnessLen +
     /// scriptWitness`.
-    pub fn new(value: u64, satisfaction_weight: u64, is_segwit: bool) -> Candidate {
+    pub fn new(value: u64, satisfaction_weight: u64, is_segwit: bool) -> Self {
         let weight = TXIN_BASE_WEIGHT + satisfaction_weight;
         Candidate {
             value,
             weight,
             input_count: 1,
             is_segwit,
+            ancestors: Vec::new(),
         }
     }
 

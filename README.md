@@ -29,7 +29,7 @@ let target = Target {
 
 let candidates = vec![
     Candidate {
-        // How many inputs does this candidate represents. Needed so we can 
+        // How many inputs does this candidate represents. Needed so we can
         // figure out the weight of the varint that encodes the number of inputs
         input_count: 1,
         // the value of the input
@@ -39,15 +39,18 @@ let candidates = vec![
         weight: TR_KEYSPEND_TXIN_WEIGHT,
         // wether it's a segwit input. Needed so we know whether to include the
         // segwit header in total weight calculations.
-        is_segwit: true
+        is_segwit: true,
+        // indices into the shared ancestor slice (empty = confirmed or no ancestors)
+        ancestors: vec![],
     },
     Candidate {
-        // A candidate can represent multiple inputs in the case where you 
+        // A candidate can represent multiple inputs in the case where you
         // always want some inputs to be spent together.
         input_count: 2,
         weight: 2*TR_KEYSPEND_TXIN_WEIGHT,
         value: 3_000_000,
-        is_segwit: true
+        is_segwit: true,
+        ancestors: vec![],
     }
 ];
 
@@ -106,19 +109,22 @@ let candidates = [
         input_count: 1,
         value: 400_000,
         weight: TR_KEYSPEND_TXIN_WEIGHT,
-        is_segwit: true
+        is_segwit: true,
+        ancestors: vec![],
     },
     Candidate {
         input_count: 1,
         value: 200_000,
         weight: TR_KEYSPEND_TXIN_WEIGHT,
-        is_segwit: true
+        is_segwit: true,
+        ancestors: vec![],
     },
     Candidate {
         input_count: 1,
         value: 11_000,
         weight: TR_KEYSPEND_TXIN_WEIGHT,
-        is_segwit: true
+        is_segwit: true,
+        ancestors: vec![],
     }
 ];
 let drain_weights = bdk_coin_select::DrainWeights::default();
