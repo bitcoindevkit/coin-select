@@ -37,6 +37,7 @@ fn segwit_one_input_one_output() {
             weight: txin.segwit_weight().to_wu(),
             input_count: 1,
             is_segwit: true,
+            ancestors: vec![],
         })
         .collect::<Vec<_>>();
 
@@ -80,6 +81,7 @@ fn segwit_two_inputs_one_output() {
             weight: txin.segwit_weight().to_wu(),
             input_count: 1,
             is_segwit: true,
+            ancestors: vec![],
         })
         .collect::<Vec<_>>();
 
@@ -124,6 +126,7 @@ fn legacy_three_inputs() {
             weight: txin.legacy_weight().to_wu(),
             input_count: 1,
             is_segwit: false,
+            ancestors: vec![],
         })
         .collect::<Vec<_>>();
 
@@ -181,6 +184,7 @@ fn legacy_three_inputs_one_segwit() {
                 .to_wu(),
                 input_count: 1,
                 is_segwit,
+                ancestors: vec![],
             }
         })
         .collect::<Vec<_>>();

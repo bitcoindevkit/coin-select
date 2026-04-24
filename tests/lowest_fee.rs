@@ -82,6 +82,7 @@ proptest! {
                 weight: (32 + 4 + 4 + 1) * 4 + 64 + 32,
                 input_count: 1,
                 is_segwit: true,
+                ancestors: vec![],
             })
             .take(params.n_candidates)
             .collect::<Vec<_>>();
@@ -200,12 +201,14 @@ fn adding_another_input_to_remove_change() {
             weight: 100,
             input_count: 1,
             is_segwit: true,
+            ancestors: vec![],
         },
         Candidate {
             value: 50_000,
             weight: 100,
             input_count: 1,
             is_segwit: true,
+            ancestors: vec![],
         },
         // NOTE: this input has negative effective value
         Candidate {
@@ -213,6 +216,7 @@ fn adding_another_input_to_remove_change() {
             weight: 100,
             input_count: 1,
             is_segwit: true,
+            ancestors: vec![],
         },
     ];
 
@@ -292,12 +296,14 @@ fn zero_fee_tx() {
             weight: 100,
             input_count: 1,
             is_segwit: true,
+            ancestors: vec![],
         },
         Candidate {
             value: 50_000,
             weight: 100,
             input_count: 1,
             is_segwit: true,
+            ancestors: vec![],
         },
     ];
 

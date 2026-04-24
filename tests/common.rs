@@ -254,6 +254,7 @@ pub fn gen_candidates(n: usize) -> Vec<Candidate> {
             weight,
             input_count,
             is_segwit,
+            ancestors: vec![],
         }
     })
     .take(n)
