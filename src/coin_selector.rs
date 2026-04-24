@@ -178,6 +178,7 @@ impl<'a> CoinSelector<'a> {
     /// this means the transaction will overpay for what it needs to reach `target`.
     pub fn excess(&self, target: Target, drain: Drain) -> i64 {
         self.rate_excess(target, drain)
+            .min(self.absolute_excess(target, drain))
             .min(self.replacement_excess(target, drain))
     }
 
@@ -192,7 +193,7 @@ impl<'a> CoinSelector<'a> {
     }
 
     /// How much the current selection overshoots the value need to satisfy `target.fee.rate` and
-    /// `target.value` (while ignoring `target.min_fee`).
+    /// `target.value` (while ignoring `target.fee.absolute`).
     pub fn rate_excess(&self, target: Target, drain: Drain) -> i64 {
         self.selected_value() as i64
             - target.value() as i64
@@ -207,6 +208,15 @@ impl<'a> CoinSelector<'a> {
             - target.value() as i64
             - drain.value as i64
             - self.implied_fee_from_feerate_wu(target, drain.weights) as i64
+    }
+
+    /// How much the current selection overshoots the value needed to satisfy `target.fee.absolute`
+    /// and `target.value` (while ignoring `target.fee.rate`).
+    pub fn absolute_excess(&self, target: Target, drain: Drain) -> i64 {
+        self.selected_value() as i64
+            - target.value() as i64
+            - drain.value as i64
+            - target.fee.absolute as i64
     }
 
     /// How much the current selection overshoots the value needed to satisfy RBF's rule 4.
@@ -257,7 +267,9 @@ impl<'a> CoinSelector<'a> {
     ///
     /// `drain_weight` can be 0 to indicate no draining output.
     pub fn implied_fee(&self, target: Target, drain_weights: DrainWeights) -> u64 {
-        let mut implied_fee = self.implied_fee_from_feerate(target, drain_weights);
+        let mut implied_fee = self
+            .implied_fee_from_feerate(target, drain_weights)
+            .max(target.fee.absolute);
 
         if let Some(replace) = target.fee.replace {
             implied_fee = Ord::max(

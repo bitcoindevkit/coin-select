@@ -66,6 +66,7 @@ proptest! {
             fee: TargetFee {
                 rate: feerate,
                 replace,
+                ..TargetFee::ZERO
             }
         };
 
