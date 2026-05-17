@@ -1,6 +1,6 @@
 [package]
 name = "bdk_coin_select"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2018"
 #rust-version = "1.54"
 homepage = "https://bitcoindevkit.org"

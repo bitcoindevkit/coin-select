@@ -1,8 +1,8 @@
 use super::*;
 #[allow(unused)] // some bug in <= 1.48.0 sees this as unused when it isn't
 use crate::float::FloatExt;
-use crate::{bnb::BnbMetric, float::Ordf32, ChangePolicy, FeeRate, Target};
-use alloc::{borrow::Cow, collections::BTreeSet};
+use crate::{bitset::Bitset, bnb::BnbMetric, float::Ordf32, ChangePolicy, FeeRate, Target};
+use alloc::{sync::Arc, vec::Vec};
 
 /// [`CoinSelector`] selects/deselects coins from a set of canididate coins.
 ///
@@ -14,9 +14,9 @@ use alloc::{borrow::Cow, collections::BTreeSet};
 #[derive(Debug, Clone)]
 pub struct CoinSelector<'a> {
     candidates: &'a [Candidate],
-    selected: Cow<'a, BTreeSet<usize>>,
-    banned: Cow<'a, BTreeSet<usize>>,
-    candidate_order: Cow<'a, [usize]>,
+    selected: Bitset,
+    banned: Bitset,
+    candidate_order: Arc<Vec<usize>>,
 }
 
 impl<'a> CoinSelector<'a> {
@@ -34,9 +34,9 @@ impl<'a> CoinSelector<'a> {
     pub fn new(candidates: &'a [Candidate]) -> Self {
         Self {
             candidates,
-            selected: Cow::Owned(Default::default()),
-            banned: Cow::Owned(Default::default()),
-            candidate_order: Cow::Owned((0..candidates.len()).collect()),
+            selected: Bitset::with_capacity(candidates.len()),
+            banned: Bitset::with_capacity(candidates.len()),
+            candidate_order: Arc::new((0..candidates.len()).collect::<Vec<_>>()),
         }
     }
 
@@ -59,21 +59,21 @@ impl<'a> CoinSelector<'a> {
     /// Deselect a candidate at `index`. `index` refers to its position in the original `candidates`
     /// slice passed into [`CoinSelector::new`].
     pub fn deselect(&mut self, index: usize) -> bool {
-        self.selected.to_mut().remove(&index)
+        self.selected.remove(index)
     }
 
     /// Convienince method to pick elements of a slice by the indexes that are currently selected.
     /// Obviously the slice must represent the inputs ordered in the same way as when they were
     /// passed to `Candidates::new`.
     pub fn apply_selection<T>(&self, candidates: &'a [T]) -> impl Iterator<Item = &'a T> + '_ {
-        self.selected.iter().map(move |i| &candidates[*i])
+        self.selected.iter().map(move |i| &candidates[i])
     }
 
     /// Select the input at `index`. `index` refers to its position in the original `candidates`
     /// slice passed into [`CoinSelector::new`].
     pub fn select(&mut self, index: usize) -> bool {
         assert!(index < self.candidates.len());
-        self.selected.to_mut().insert(index)
+        self.selected.insert(index)
     }
 
     /// Select the next unselected candidate in the sorted order fo the candidates.
@@ -95,20 +95,20 @@ impl<'a> CoinSelector<'a> {
     /// [`unselected`]: Self::unselected
     /// [`unselected_indices`]: Self::unselected_indices
     pub fn ban(&mut self, index: usize) {
-        self.banned.to_mut().insert(index);
+        self.banned.insert(index);
     }
 
     /// Gets the list of inputs that have been banned by [`ban`].
     ///
     /// [`ban`]: Self::ban
-    pub fn banned(&self) -> &BTreeSet<usize> {
+    pub fn banned(&self) -> &Bitset {
         &self.banned
     }
 
     /// Is the input at `index` selected. `index` refers to its position in the original
     /// `candidates` slice passed into [`CoinSelector::new`].
     pub fn is_selected(&self, index: usize) -> bool {
-        self.selected.contains(&index)
+        self.selected.contains(index)
     }
 
     /// Is meeting this `target` possible with the current selection with this `drain` (i.e. change output).
@@ -158,7 +158,7 @@ impl<'a> CoinSelector<'a> {
     pub fn selected_value(&self) -> u64 {
         self.selected
             .iter()
-            .map(|&index| self.candidates[index].value)
+            .map(|index| self.candidates[index].value)
             .sum()
     }
 
@@ -326,9 +326,9 @@ impl<'a> CoinSelector<'a> {
     where
         F: FnMut((usize, Candidate), (usize, Candidate)) -> core::cmp::Ordering,
     {
-        let order = self.candidate_order.to_mut();
         let candidates = &self.candidates;
-        order.sort_by(|a, b| cmp((*a, candidates[*a]), (*b, candidates[*b])))
+        Arc::make_mut(&mut self.candidate_order)
+            .sort_by(|a, b| cmp((*a, candidates[*a]), (*b, candidates[*b])))
     }
 
     /// Sorts the candidates by the key function.
@@ -394,7 +394,7 @@ impl<'a> CoinSelector<'a> {
     ) -> impl ExactSizeIterator<Item = (usize, Candidate)> + DoubleEndedIterator + '_ {
         self.selected
             .iter()
-            .map(move |&index| (index, self.candidates[index]))
+            .map(move |index| (index, self.candidates[index]))
     }
 
     /// The unselected candidates with their index.
@@ -408,7 +408,7 @@ impl<'a> CoinSelector<'a> {
     }
 
     /// The indices of the selelcted candidates.
-    pub fn selected_indices(&self) -> &BTreeSet<usize> {
+    pub fn selected_indices(&self) -> &Bitset {
         &self.selected
     }
 
@@ -420,8 +420,8 @@ impl<'a> CoinSelector<'a> {
     pub fn unselected_indices(&self) -> impl DoubleEndedIterator<Item = usize> + '_ {
         self.candidate_order
             .iter()
-            .filter(move |index| !(self.selected.contains(index) || self.banned.contains(index)))
             .copied()
+            .filter(move |&index| !(self.selected.contains(index) || self.banned.contains(index)))
     }
 
     /// Whether there are any unselected candidates left.
@@ -509,14 +509,15 @@ impl<'a> CoinSelector<'a> {
     ///
     /// A candidate if effective if it provides more value than it takes to pay for at `feerate`.
     pub fn select_all_effective(&mut self, feerate: FeeRate) {
-        for cand_index in self.candidate_order.iter() {
+        for i in 0..self.candidate_order.len() {
+            let cand_index = self.candidate_order[i];
             if self.selected.contains(cand_index)
                 || self.banned.contains(cand_index)
-                || self.candidates[*cand_index].effective_value(feerate) <= 0.0
+                || self.candidates[cand_index].effective_value(feerate) <= 0.0
             {
                 continue;
             }
-            self.selected.to_mut().insert(*cand_index);
+            self.selected.insert(cand_index);
         }
     }
 
@@ -601,7 +602,7 @@ impl core::fmt::Display for CoinSelector<'_> {
             write!(f, "{}", i)?;
             if self.is_selected(i) {
                 write!(f, "✔")?;
-            } else if self.banned().contains(&i) {
+            } else if self.banned().contains(i) {
                 write!(f, "✘")?
             } else {
                 write!(f, "☐")?;

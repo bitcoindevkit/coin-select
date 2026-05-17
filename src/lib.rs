@@ -11,6 +11,8 @@ extern crate alloc;
 #[macro_use]
 extern crate std;
 
+mod bitset;
+pub use bitset::*;
 mod coin_selector;
 pub mod float;
 pub use coin_selector::*;
