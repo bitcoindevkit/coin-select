@@ -4,7 +4,7 @@ mod common;
 use bdk_coin_select::metrics::{Changeless, LowestFee};
 use bdk_coin_select::{
     BnbMetric, Candidate, ChangePolicy, CoinSelector, Drain, DrainWeights, FeeRate, Replace,
-    Target, TargetFee, TargetOutputs, TX_FIXED_FIELD_WEIGHT,
+    Target, TargetFee, TargetOutputs, TXIN_BASE_WEIGHT, TX_FIXED_FIELD_WEIGHT,
 };
 use proptest::prelude::*;
 
@@ -130,6 +130,89 @@ proptest! {
         let change_policy = ChangePolicy::min_value(params.drain_weights(), params.drain_dust);
         let metric = LowestFee { target: params.target(), long_term_feerate: params.long_term_feerate(), change_policy };
         common::compare_against_benchmarks(params, candidates, change_policy, metric)?;
+    }
+
+    /// Plants a single candidate whose value is exactly `target + fee_for_1_input`,
+    /// then surrounds it with `n_noise` dust candidates (value=1, normal weight).
+    /// Under `LowestFee`:
+    /// - The planted candidate alone is a valid no-change solution with score = fee_for_1_input.
+    /// - Noise alone can never cover the target (`n_noise <= 200 < target_value >= 10_000`).
+    /// - Adding any noise to the planted candidate makes the fee delta strictly exceed
+    ///   the 1-sat value contribution, so the selection's excess goes negative (target
+    ///   no longer met) or drain triggers (score = drain-tx fee + spend_fee > fee_for_1_input).
+    /// So `[planted]` is the unique optimum, and BnB must find it.
+    #[test]
+    #[cfg(not(debug_assertions))] // too slow if compiling for debug
+    fn lowest_fee_finds_planted_single_input(
+        n_noise in 0..200_usize,
+        target_value in 10_000..1_000_000_u64,
+        n_target_outputs in 1usize..150,
+        target_weight in 0..10_000_u32,
+        feerate in 1.0..100.0_f32,
+        feerate_lt_diff in -5.0..50.0_f32,
+        drain_weight in 100..=500_u32,
+        drain_spend_weight in 1..=2000_u32,
+        drain_dust in 100..=1000_u64,
+        n_drain_outputs in 1usize..150,
+    ) {
+        let params = common::StrategyParams {
+            n_candidates: 0, // unused here
+            target_value,
+            n_target_outputs,
+            target_weight,
+            replace: None,
+            feerate,
+            feerate_lt_diff,
+            drain_weight,
+            drain_spend_weight,
+            drain_dust,
+            n_drain_outputs,
+        };
+        let target = params.target();
+        let long_term_feerate = params.long_term_feerate();
+        let change_policy = ChangePolicy::min_value_and_waste(
+            params.drain_weights(),
+            params.drain_dust,
+            params.feerate(),
+            long_term_feerate,
+        );
+
+        // Compute the no-drain fee for a 1-input tx by probing with a dummy candidate.
+        let input_weight = TXIN_BASE_WEIGHT + 107; // P2WPKH-like
+        let probe = [Candidate { value: 0, weight: input_weight, input_count: 1, is_segwit: true }];
+        let mut probe_cs = CoinSelector::new(&probe);
+        probe_cs.select(0);
+        let fee_for_1_input = probe_cs.implied_fee(target, DrainWeights::NONE);
+
+        // Build the pool: planted-perfect at index 0, then n_noise dust candidates.
+        let mut candidates = Vec::with_capacity(n_noise + 1);
+        candidates.push(Candidate {
+            value: target_value + fee_for_1_input,
+            weight: input_weight,
+            input_count: 1,
+            is_segwit: true,
+        });
+        for _ in 0..n_noise {
+            candidates.push(Candidate {
+                value: 1,
+                weight: input_weight,
+                input_count: 1,
+                is_segwit: true,
+            });
+        }
+
+        let metric = LowestFee { target, long_term_feerate, change_policy };
+        let mut selector = CoinSelector::new(&candidates);
+        let score = selector
+            .run_bnb(metric, 10 * (n_noise + 2))
+            .expect("BnB must converge on the planted single-input optimum");
+
+        prop_assert_eq!(selector.selected_indices().len(), 1,
+            "expected just the planted candidate, got {:?} (score={})",
+            selector.selected_indices(), score);
+        prop_assert!(selector.is_selected(0),
+            "expected planted candidate (index 0) selected, got {:?} (score={})",
+            selector.selected_indices(), score);
     }
 }
 
