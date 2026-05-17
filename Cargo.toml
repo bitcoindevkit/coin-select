@@ -24,3 +24,8 @@ std = []
 rand = "0.9"
 proptest = "1.7"
 bitcoin = "0.32"
+criterion = "0.5"
+
+[[bench]]
+name = "coin_selector"
+harness = false
