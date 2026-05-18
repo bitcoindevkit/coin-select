@@ -1,3 +1,17 @@
+//! Branch-and-bound search.
+//!
+//! BnB explores a binary tree where each [`Branch`] expands into two
+//! children: an *inclusion* child that selects the candidate at the
+//! branch's `cursor`, and an *exclusion* child that bans it along with
+//! any same-(value, weight) duplicates that immediately follow.
+//!
+//! Cursors only advance as we descend — inclusion's child has cursor
+//! `parent + 1`; exclusion's jumps past the banned duplicates. That
+//! invariant lets `insert_new_branches` skip directly to the next
+//! undecided candidate without re-scanning `selected` / `banned`. The
+//! only scanning happens to step past pre-selected / pre-banned positions
+//! (rare, lazy).
+
 use core::cmp::Reverse;
 
 use crate::{float::Ordf32, Drain, SelectionCache, SelectionView, Target};
@@ -61,6 +75,7 @@ impl<'a, M: BnbMetric> Iterator for BnbIter<'a, M> {
             selector,
             cache,
             is_exclusion,
+            cursor,
             ..
         } = branch;
 
@@ -79,7 +94,7 @@ impl<'a, M: BnbMetric> Iterator for BnbIter<'a, M> {
             };
         }
 
-        self.insert_new_branches(&selector, &cache);
+        self.insert_new_branches(&selector, &cache, cursor);
         Some(return_val.map(|score| (selector, score)))
     }
 }
@@ -98,7 +113,7 @@ impl<'a, M: BnbMetric> BnbIter<'a, M> {
         }
 
         let cache = SelectionCache::from_selector(&selector);
-        iter.consider_adding_to_queue(&selector, &cache, false);
+        iter.consider_adding_to_queue(&selector, &cache, false, 0);
 
         iter
     }
@@ -108,6 +123,7 @@ impl<'a, M: BnbMetric> BnbIter<'a, M> {
         cs: &CoinSelector<'a>,
         cache: &SelectionCache,
         is_exclusion: bool,
+        cursor: usize,
     ) {
         let bound = self
             .metric
@@ -123,34 +139,63 @@ impl<'a, M: BnbMetric> BnbIter<'a, M> {
                     selector: cs.clone(),
                     cache: cache.clone(),
                     is_exclusion,
+                    cursor,
                 });
             }
         }
     }
 
-    fn insert_new_branches(&mut self, cs: &CoinSelector<'a>, cache: &SelectionCache) {
-        let (next_index, next) = match cs.unselected().next() {
-            Some(c) => c,
-            None => return, // exhausted
+    fn insert_new_branches(&mut self, cs: &CoinSelector<'a>, cache: &SelectionCache, start: usize) {
+        // Find the position to expand on: at or after `start`, whichever is
+        // the first candidate that's neither selected nor banned. Usually
+        // this *is* `start` — the only reason to advance is to skip past
+        // pre-selected/pre-banned candidates (see module-level docs).
+        let mut iter = cs.candidates().skip(start);
+        let mut cursor = start;
+        let (here_idx, here_cand) = loop {
+            match iter.next() {
+                None => return, // no more candidates — this branch is a leaf
+                Some((idx, cand)) => {
+                    if !cs.is_selected(idx) && !cs.banned().contains(idx) {
+                        break (idx, cand);
+                    }
+                    cursor += 1;
+                }
+            }
         };
+        // Past here, `iter` is positioned at `cursor + 1`.
 
-        // Inclusion branch: selecting `next_index` requires updating the cache.
+        // Inclusion: descendants explore "this candidate is selected".
         let mut inclusion_cs = cs.clone();
         let mut inclusion_cache = cache.clone();
-        inclusion_cs.select(next_index);
-        inclusion_cache.add(next);
-        self.consider_adding_to_queue(&inclusion_cs, &inclusion_cache, false);
+        inclusion_cs.select(here_idx);
+        inclusion_cache.add(here_cand);
+        self.consider_adding_to_queue(&inclusion_cs, &inclusion_cache, false, cursor + 1);
 
-        // Exclusion branch: only bans, no selection change → cache unchanged.
+        // Exclusion: descendants explore "this candidate is *not* selected".
+        // Bans this and every consecutive same-(value, weight) candidate —
+        // they're equivalent choices, so we deduplicate by handling the
+        // entire equivalence class in one branch. The cursor jumps past
+        // all of them.
         let mut exclusion_cs = cs.clone();
-        let to_ban = (next.value, next.weight);
-        for (ban_index, ban_cand) in cs.unselected() {
-            if (ban_cand.value, ban_cand.weight) != to_ban {
+        exclusion_cs.ban(here_idx);
+        let equiv = (here_cand.value, here_cand.weight);
+        let mut exclusion_cursor = cursor + 1;
+        for (idx, cand) in iter {
+            // Already-decided candidates (pre-selected or banned) must not be banned and must not
+            // end the equivalence run: the pre-cursor version scanned `unselected()`, which skips
+            // them entirely. The cursor may still advance past them — they're decided.
+            if cs.is_selected(idx) || cs.banned().contains(idx) {
+                exclusion_cursor += 1;
+                continue;
+            }
+            if (cand.value, cand.weight) != equiv {
                 break;
             }
-            exclusion_cs.ban(ban_index);
+            exclusion_cs.ban(idx);
+            exclusion_cursor += 1;
         }
-        self.consider_adding_to_queue(&exclusion_cs, cache, true);
+        self.consider_adding_to_queue(&exclusion_cs, cache, true, exclusion_cursor);
     }
 }
 
@@ -160,6 +205,10 @@ struct Branch<'a> {
     selector: CoinSelector<'a>,
     cache: SelectionCache,
     is_exclusion: bool,
+    /// Position in `candidate_order` of the candidate whose include /
+    /// exclude decision creates this branch's two children. See the
+    /// module-level "Cursor invariant" section.
+    cursor: usize,
 }
 
 impl Ord for Branch<'_> {

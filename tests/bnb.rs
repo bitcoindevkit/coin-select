@@ -150,6 +150,52 @@ fn bnb_finds_solution_if_possible_in_n_iter() {
     assert_eq!(excess, 0);
 }
 
+#[test]
+/// The exclusion branch's same-(value, weight) dedup run must skip already-decided candidates
+/// instead of banning them (a pre-selected candidate must never end up banned) or letting them
+/// end the run early.
+///
+/// Regression test: candidate 1 is pre-selected by the caller and shares (value, weight) with
+/// candidate 0. The optimal solution requires excluding candidate 0, and the dedup run following
+/// that exclusion used to also ban the pre-selected candidate 1, contaminating the selector that
+/// `run_bnb` hands back.
+fn bnb_exclusion_dedup_skips_decided_candidates() {
+    let candidates = vec![
+        Candidate::new(500, 100, false), // same (value, weight) as the pre-selected candidate
+        Candidate::new(500, 100, false), // pre-selected
+        Candidate::new(400, 100, false),
+    ];
+
+    let mut cs = CoinSelector::new(&candidates);
+    cs.select(1);
+
+    let target = Target {
+        outputs: TargetOutputs {
+            value_sum: 900,
+            weight_sum: 0,
+            n_outputs: 1,
+        },
+        fee: TargetFee::ZERO,
+        max_weight: None,
+    };
+
+    let _ = cs
+        .run_bnb(target, MinExcessThenWeight, 1_000)
+        .expect("must find solution");
+
+    // Optimal selection is {1, 2}: candidate 1 is mandatory and adding candidate 2 hits the
+    // target exactly, while any selection containing candidate 0 overshoots.
+    assert_eq!(cs.selected_indices().iter().collect::<Vec<_>>(), vec![1, 2]);
+    // The returned selector must not have any candidate simultaneously selected and banned.
+    for (idx, _) in cs.selected() {
+        assert!(
+            !cs.banned().contains(idx),
+            "candidate {} is both selected and banned",
+            idx
+        );
+    }
+}
+
 proptest! {
     #[test]
     #[cfg(not(debug_assertions))] // too slow if compiling for debug
