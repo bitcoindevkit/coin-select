@@ -15,8 +15,12 @@ pub struct Bitset {
 
 impl Bitset {
     pub(crate) fn with_capacity(bit_capacity: usize) -> Self {
+        // clippy on recent toolchains suggests `bit_capacity.div_ceil(64)`, but `div_ceil` was
+        // stabilised in 1.73 and our MSRV is 1.54, so allow the manual ceil-divide.
+        #[allow(clippy::manual_div_ceil)]
+        let n_words = (bit_capacity + 63) / 64;
         Self {
-            words: vec![0; (bit_capacity + 63) / 64],
+            words: vec![0; n_words],
             bit_capacity,
         }
     }
@@ -225,13 +229,14 @@ mod tests {
             assert!(b.contains(i));
         }
         assert_eq!(b.len(), expected.len());
-        assert_eq!(
-            b.iter().collect::<alloc::vec::Vec<_>>(),
-            expected.to_vec()
-        );
+        assert_eq!(b.iter().collect::<alloc::vec::Vec<_>>(), expected.to_vec());
         assert_eq!(
             b.iter().rev().collect::<alloc::vec::Vec<_>>(),
-            expected.iter().rev().copied().collect::<alloc::vec::Vec<_>>()
+            expected
+                .iter()
+                .rev()
+                .copied()
+                .collect::<alloc::vec::Vec<_>>()
         );
     }
 
