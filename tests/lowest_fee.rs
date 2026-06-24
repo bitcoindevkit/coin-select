@@ -192,6 +192,7 @@ fn adding_another_input_to_remove_change() {
             weight_sum: 200 - TX_FIXED_FIELD_WEIGHT - 1,
             n_outputs: 1,
         },
+        max_weight: None,
     };
 
     let candidates = vec![
@@ -284,6 +285,7 @@ fn zero_fee_tx() {
             weight_sum: 200 - TX_FIXED_FIELD_WEIGHT - 1,
             n_outputs: 1,
         },
+        max_weight: None,
     };
 
     let candidates = vec![

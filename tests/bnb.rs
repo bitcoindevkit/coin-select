@@ -118,6 +118,7 @@ fn bnb_finds_an_exact_solution_in_n_iter() {
         },
         // we're trying to find an exact selection value so set fees to 0
         fee: TargetFee::ZERO,
+        max_weight: None,
     };
 
     let solutions = cs.bnb_solutions(MinExcessThenWeight { target });
@@ -152,6 +153,7 @@ fn bnb_finds_solution_if_possible_in_n_iter() {
             n_outputs: 1,
         },
         fee: TargetFee::default(),
+        max_weight: None,
     };
 
     let solutions = cs.bnb_solutions(MinExcessThenWeight { target });
@@ -195,10 +197,7 @@ proptest! {
         let candidates = wv.take(num_inputs).collect::<Vec<_>>();
         let cs = CoinSelector::new(&candidates);
 
-        let target = Target {
-            outputs: TargetOutputs { value_sum: target_value, weight_sum: 0, n_outputs: 1 },
-            fee: TargetFee::ZERO,
-        };
+        let target = Target {outputs:TargetOutputs{value_sum:target_value,weight_sum:0,n_outputs:1},fee:TargetFee::ZERO, max_weight: None };
 
         let solutions = cs.bnb_solutions(MinExcessThenWeight { target });
 
@@ -244,6 +243,7 @@ proptest! {
             outputs: TargetOutputs { value_sum: target_value, weight_sum: 0, n_outputs: 1 },
             // we're trying to find an exact selection value so set fees to 0
             fee: TargetFee::ZERO,
+            max_weight: None
         };
 
         let solutions = cs.bnb_solutions(MinExcessThenWeight { target });

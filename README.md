@@ -24,7 +24,8 @@ let outputs = vec![TxOut {
 
 let target = Target {
     outputs: TargetOutputs::fund_outputs(outputs.iter().map(|output| (output.weight().to_wu(), output.value.to_sat()))),
-    fee: TargetFee::from_feerate(FeeRate::from_sat_per_vb(42.0))
+    fee: TargetFee::from_feerate(FeeRate::from_sat_per_vb(42.0)),
+    max_weight: None
 };
 
 let candidates = vec![
@@ -130,6 +131,7 @@ let mut coin_selector = CoinSelector::new(&candidates);
 let target = Target {
     fee: TargetFee::from_feerate(FeeRate::from_sat_per_vb(15.0)),
     outputs: TargetOutputs::fund_outputs(outputs.iter().map(|output| (output.weight().to_wu(), output.value.to_sat()))),
+    max_weight: None
 };
 
 // The change output must be at least this size to be relayed.

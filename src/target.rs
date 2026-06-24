@@ -7,6 +7,9 @@ pub struct Target {
     pub fee: TargetFee,
     /// The aggregate properties of outputs you're trying to fund
     pub outputs: TargetOutputs,
+    /// Maximum allowed weight of the resulting transaction (WU).
+    /// `None` = unconstrained.
+    pub max_weight: Option<u64>,
 }
 
 impl Target {

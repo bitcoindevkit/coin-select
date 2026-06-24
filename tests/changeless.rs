@@ -67,7 +67,8 @@ proptest! {
                 rate: feerate,
                 replace,
                 ..TargetFee::ZERO
-            }
+            },
+            max_weight: None
         };
 
         let solutions = cs.bnb_solutions(metrics::Changeless {

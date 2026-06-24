@@ -308,7 +308,7 @@ impl<'a> CoinSelector<'a> {
         self.selected_value() as i64 - (self.input_weight() as f32 * feerate.spwu()).ceil() as i64
     }
 
-    // /// Waste sum of all selected inputs.
+    /// Waste sum of all selected inputs.
     fn input_waste(&self, feerate: FeeRate, long_term_feerate: FeeRate) -> f32 {
         self.input_weight() as f32 * (feerate.spwu() - long_term_feerate.spwu())
     }
@@ -429,15 +429,20 @@ impl<'a> CoinSelector<'a> {
         self.unselected_indices().next().is_none()
     }
 
+    /// Whether the tx implied by the current selection and `drain` is within `target.max_weight`.
+    fn is_within_max_weight(&self, target: Target, drain: Drain) -> bool {
+        match target.max_weight {
+            Some(max_weight) => self.weight(target.outputs, drain.weights) <= max_weight,
+            None => true,
+        }
+    }
+
     /// Whether the constraints of `Target` have been met if we include a specific `drain` ouput.
     ///
-    /// Note if [`is_target_met`] is true and the `drain` is produced from the [`drain`] method then
-    /// this method will also always be true.
-    ///
-    /// [`is_target_met`]: Self::is_target_met
-    /// [`drain`]: Self::drain
+    /// Note: even if [`Self::is_target_met`] is true, this can be false when adding the `drain` pushes
+    /// the transaction weight over [`Target::max_weight`].
     pub fn is_target_met_with_drain(&self, target: Target, drain: Drain) -> bool {
-        self.excess(target, drain) >= 0
+        self.excess(target, drain) >= 0 && self.is_within_max_weight(target, drain)
     }
 
     /// Whether the constraints of `Target` have been met.
@@ -467,16 +472,14 @@ impl<'a> CoinSelector<'a> {
             },
         );
         if excess > change_policy.min_value as i64 {
-            debug_assert_eq!(
-                self.is_target_met(target),
-                self.is_target_met_with_drain(
-                    target,
-                    Drain {
-                        weights: change_policy.drain_weights,
-                        value: excess as u64
-                    }
-                ),
-                "if the target is met without a drain it must be met after adding the drain"
+            let drain = Drain {
+                weights: change_policy.drain_weights,
+                value: excess as u64,
+            };
+            debug_assert!(
+                self.is_target_met_with_drain(target, drain)
+                    || !self.is_within_max_weight(target, drain),
+                    "if the target is met without a drain it must be met after adding the drain, unless max weight is exceeded"
             );
             Some(excess as u64)
         } else {
@@ -520,13 +523,22 @@ impl<'a> CoinSelector<'a> {
         }
     }
 
-    /// Select candidates until `target` has been met assuming the `drain` output is attached.
+    /// Select candidates until `target` has been met.
     ///
-    /// Returns an error if the target was unable to be met.
-    pub fn select_until_target_met(&mut self, target: Target) -> Result<(), InsufficientFunds> {
+    /// # Errors
+    ///
+    /// - [`SelectError::InsufficientFunds`] if the candidates can't cover the target value.
+    /// - [`SelectError::MaxWeightExceeded`] if the value is met but the selection exceeds [`Target::max_weight`].
+    pub fn select_until_target_met(&mut self, target: Target) -> Result<(), SelectError> {
         self.select_until(|cs| cs.is_target_met(target))
-            .ok_or_else(|| InsufficientFunds {
-                missing: self.excess(target, Drain::NONE).unsigned_abs(),
+            .ok_or_else(|| {
+                if !self.is_within_max_weight(target, Drain::NONE) {
+                    SelectError::MaxWeightExceeded
+                } else {
+                    SelectError::InsufficientFunds(InsufficientFunds {
+                        missing: self.excess(target, Drain::NONE).unsigned_abs(),
+                    })
+                }
             })
     }
 
@@ -638,6 +650,38 @@ impl DoubleEndedIterator for SelectIter<'_> {
         let (index, wv) = self.cs.unselected().next_back()?;
         self.cs.select(index);
         Some((self.cs.clone(), index, wv))
+    }
+}
+
+/// Error returned when a selection cannot satisfy the [`Target`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectError {
+    /// The selected inputs don't cover the target value (plus fees).
+    InsufficientFunds(InsufficientFunds),
+    /// The target value is met, but the resulting transaction exceeds [`Target::max_weight`].
+    MaxWeightExceeded,
+}
+
+impl core::fmt::Display for SelectError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::InsufficientFunds(e) => write!(f, "{}", e),
+            Self::MaxWeightExceeded => {
+                write!(
+                    f,
+                    "selection exceeds the maximum allowed transaction weight"
+                )
+            }
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for SelectError {}
+
+impl From<InsufficientFunds> for SelectError {
+    fn from(e: InsufficientFunds) -> Self {
+        Self::InsufficientFunds(e)
     }
 }
 

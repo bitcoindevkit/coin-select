@@ -221,6 +221,7 @@ impl StrategyParams {
                 weight_sum: self.target_weight as u64,
                 n_outputs: self.n_target_outputs,
             },
+            max_weight: None,
         }
     }
 
