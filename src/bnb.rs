@@ -1,6 +1,6 @@
 use core::cmp::Reverse;
 
-use crate::{float::Ordf32, Drain};
+use crate::{float::Ordf32, Drain, Target};
 
 use super::CoinSelector;
 use alloc::collections::BinaryHeap;
@@ -11,6 +11,8 @@ use alloc::collections::BinaryHeap;
 pub(crate) struct BnbIter<'a, M: BnbMetric> {
     queue: BinaryHeap<Branch<'a>>,
     best: Option<Ordf32>,
+    /// The target the metric scores selections against.
+    pub(crate) target: Target,
     /// The `BnBMetric` that will score each selection
     pub(crate) metric: M,
 }
@@ -53,7 +55,7 @@ impl<'a, M: BnbMetric> Iterator for BnbIter<'a, M> {
 
         let mut return_val = None;
         if !branch.is_exclusion {
-            if let Some(score) = self.metric.score(&selector) {
+            if let Some(score) = self.metric.score(&selector, self.target) {
                 let better = match self.best {
                     Some(best_score) => score < best_score,
                     None => true,
@@ -71,10 +73,11 @@ impl<'a, M: BnbMetric> Iterator for BnbIter<'a, M> {
 }
 
 impl<'a, M: BnbMetric> BnbIter<'a, M> {
-    pub(crate) fn new(mut selector: CoinSelector<'a>, metric: M) -> Self {
+    pub(crate) fn new(mut selector: CoinSelector<'a>, target: Target, metric: M) -> Self {
         let mut iter = BnbIter {
             queue: BinaryHeap::default(),
             best: None,
+            target,
             metric,
         };
 
@@ -88,7 +91,7 @@ impl<'a, M: BnbMetric> BnbIter<'a, M> {
     }
 
     fn consider_adding_to_queue(&mut self, cs: &CoinSelector<'a>, is_exclusion: bool) {
-        let bound = self.metric.bound(cs);
+        let bound = self.metric.bound(cs, self.target);
         if let Some(bound) = bound {
             let is_good_enough = match self.best {
                 Some(best) => best > bound,
@@ -199,25 +202,25 @@ impl Eq for Branch<'_> {}
 ///
 /// This is to be used as input for [`CoinSelector::run_bnb`] or [`CoinSelector::bnb_solutions`].
 pub trait BnbMetric {
-    /// Get the score of a given selection.
+    /// Get the score of a given selection for `target`.
     ///
     /// If this returns `None`, the selection is invalid.
-    fn score(&mut self, cs: &CoinSelector<'_>) -> Option<Ordf32>;
+    fn score(&mut self, cs: &CoinSelector<'_>, target: Target) -> Option<Ordf32>;
 
-    /// Get the lower bound score using a heuristic.
+    /// Get the lower bound score using a heuristic for `target`.
     ///
     /// This represents the best possible score of all descendant branches (according to the
     /// heuristic).
     ///
     /// If this returns `None`, the current branch and all descendant branches will not have valid
     /// solutions.
-    fn bound(&mut self, cs: &CoinSelector<'_>) -> Option<Ordf32>;
+    fn bound(&mut self, cs: &CoinSelector<'_>, target: Target) -> Option<Ordf32>;
 
-    /// The change output (a.k.a. drain) this metric decides on for the given selection, or
-    /// [`Drain::NONE`] if it decides there should be no change.
+    /// The change output (a.k.a. drain) this metric decides on for the given selection and `target`,
+    /// or [`Drain::NONE`] if it decides there should be no change.
     ///
     /// Call this on a branch-and-bound solution to get the change output the metric optimized against.
-    fn drain(&mut self, cs: &CoinSelector<'_>) -> Drain;
+    fn drain(&mut self, cs: &CoinSelector<'_>, target: Target) -> Drain;
 
     /// Returns whether the metric requies we order candidates by descending value per weight unit.
     fn requires_ordering_by_descending_value_pwu(&self) -> bool {

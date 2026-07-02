@@ -54,8 +54,8 @@ where
 
     println!("\texhaustive search:");
     let now = std::time::Instant::now();
-    let exp_result = exhaustive_search(&mut exp_selection, &mut metric);
-    let exp_change = metric.drain(&exp_selection);
+    let exp_result = exhaustive_search(&mut exp_selection, target, &mut metric);
+    let exp_change = metric.drain(&exp_selection, target);
     let exp_result_str = result_string(&exp_result.ok_or("no possible solution"), exp_change);
     println!(
         "\t\telapsed={:8}s result={}",
@@ -65,7 +65,7 @@ where
     // bonus check: ensure replacement fee is respected
     if exp_result.is_some() {
         let selected_value = exp_selection.selected_value();
-        let drain = metric.drain(&exp_selection);
+        let drain = metric.drain(&exp_selection, target);
         let target_value = target.value();
         let replace_fee = params
             .replace
@@ -80,8 +80,8 @@ where
     println!("\tbranch and bound:");
     let now = std::time::Instant::now();
     let mut bnb_metric = metric.clone();
-    let result = bnb_search(&mut selection, metric, usize::MAX);
-    let change = bnb_metric.drain(&selection);
+    let result = bnb_search(&mut selection, target, metric, usize::MAX);
+    let change = bnb_metric.drain(&selection, target);
     let result_str = result_string(&result, change);
     println!(
         "\t\telapsed={:8}s result={}",
@@ -105,7 +105,7 @@ where
 
             // bonus check: ensure replacement fee is respected
             let selected_value = selection.selected_value();
-            let drain = bnb_metric.drain(&selection);
+            let drain = bnb_metric.drain(&selection, target);
             let target_value = target.value();
             let replace_fee = params
                 .replace
@@ -150,12 +150,12 @@ where
     print_candidates(&params, &init_cs);
 
     for (cs, _) in ExhaustiveIter::new(&init_cs).into_iter().flatten() {
-        if let Some(lb_score) = metric.bound(&cs) {
+        if let Some(lb_score) = metric.bound(&cs, target) {
             // This is the branch's lower bound. In other words, this is the BEST selection
             // possible (can overshoot) traversing down this branch. Let's check that!
 
-            if let Some(score) = metric.score(&cs) {
-                let has_change = metric.drain(&cs).is_some();
+            if let Some(score) = metric.score(&cs, target) {
+                let has_change = metric.drain(&cs, target).is_some();
                 prop_assert!(
                     score >= lb_score,
                     "checking branch: selection={} score={} change={} lb={}",
@@ -171,9 +171,9 @@ where
                 .flatten()
                 .filter(|(_, inc)| *inc)
             {
-                if let Some(descendant_score) = metric.score(&descendant_cs) {
-                    let parent_has_change = metric.drain(&cs).is_some();
-                    let descendant_has_change = metric.drain(&descendant_cs).is_some();
+                if let Some(descendant_score) = metric.score(&descendant_cs, target) {
+                    let parent_has_change = metric.drain(&cs, target).is_some();
+                    let descendant_has_change = metric.drain(&descendant_cs, target).is_some();
                     prop_assert!(
                         descendant_score >= lb_score,
                         "
@@ -248,7 +248,6 @@ impl StrategyParams {
 
     pub fn lowest_fee_metric(&self) -> LowestFee {
         LowestFee {
-            target: self.target(),
             long_term_feerate: self.long_term_feerate(),
             dust_relay_feerate: self.dust_relay_feerate(),
             drain_weights: self.drain_weights(),
@@ -332,7 +331,11 @@ impl<'a> Iterator for ExhaustiveIter<'a> {
     }
 }
 
-pub fn exhaustive_search<M>(cs: &mut CoinSelector, metric: &mut M) -> Option<(Ordf32, usize)>
+pub fn exhaustive_search<M>(
+    cs: &mut CoinSelector,
+    target: Target,
+    metric: &mut M,
+) -> Option<(Ordf32, usize)>
 where
     M: BnbMetric,
 {
@@ -347,7 +350,7 @@ where
         .enumerate()
         .inspect(|(i, _)| rounds = *i)
         .filter(|(_, (_, inclusion))| *inclusion)
-        .filter_map(|(_, (cs, _))| metric.score(&cs).map(|score| (cs, score)));
+        .filter_map(|(_, (cs, _))| metric.score(&cs, target).map(|score| (cs, score)));
 
     for (child_cs, score) in iter {
         match &mut best {
@@ -371,6 +374,7 @@ where
 
 pub fn bnb_search<M>(
     cs: &mut CoinSelector,
+    target: Target,
     metric: M,
     max_rounds: usize,
 ) -> Result<(Ordf32, usize), NoBnbSolution>
@@ -379,7 +383,7 @@ where
 {
     let mut rounds = 0_usize;
     let (selection, score) = cs
-        .bnb_solutions(metric)
+        .bnb_solutions(target, metric)
         .inspect(|_| rounds += 1)
         .take(max_rounds)
         .flatten()
@@ -418,7 +422,7 @@ pub fn compare_against_benchmarks<M: BnbMetric + Clone>(
     let mut rng = TestRng::deterministic_rng(RngAlgorithm::ChaCha);
     let target = params.target();
     let cs = CoinSelector::new(&candidates);
-    let solutions = cs.bnb_solutions(metric.clone());
+    let solutions = cs.bnb_solutions(target, metric.clone());
 
     let best = solutions
         .enumerate()
@@ -457,10 +461,10 @@ pub fn compare_against_benchmarks<M: BnbMetric + Clone>(
             let cmp_benchmarks = cmp_benchmarks
                 .into_iter()
                 .filter(|cs| cs.is_target_met(target));
-            let sol_score = metric.score(&sol);
+            let sol_score = metric.score(&sol, target);
 
             for (_bench_id, mut bench) in cmp_benchmarks.enumerate() {
-                let bench_score = metric.score(&bench);
+                let bench_score = metric.score(&bench, target);
                 if sol_score > bench_score {
                     dbg!(_bench_id);
                     println!("bnb solution: {}", sol);
@@ -492,7 +496,7 @@ fn randomly_satisfy_target<'a, R: rand::Rng>(
     while let Some(next) = cs.unselected_indices().choose(rng) {
         cs.select(next);
         if cs.is_target_met(target) {
-            let curr_score = metric.score(&cs);
+            let curr_score = metric.score(&cs, target);
             if let Some(last_score) = last_score {
                 if curr_score.is_none() || curr_score.unwrap() > last_score {
                     break;

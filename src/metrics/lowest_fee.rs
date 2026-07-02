@@ -17,8 +17,6 @@ use crate::{float::Ordf32, BnbMetric, CoinSelector, Drain, DrainWeights, FeeRate
 /// dust threshold implied by `dust_relay_feerate`.
 #[derive(Clone, Copy)]
 pub struct LowestFee {
-    /// The target parameters for the resultant selection.
-    pub target: Target,
     /// The estimated feerate needed to spend our change output later.
     pub long_term_feerate: FeeRate,
     /// The feerate used to determine the dust threshold of the change output.
@@ -29,11 +27,11 @@ pub struct LowestFee {
 
 impl LowestFee {
     /// The value the change output should have, or `None` if this selection should be changeless.
-    fn drain_value(&self, cs: &CoinSelector<'_>) -> Option<u64> {
+    fn drain_value(&self, cs: &CoinSelector<'_>, target: Target) -> Option<u64> {
         // The change output pays for its own weight, so the value we'd actually recover is the
         // excess remaining after accounting for that weight.
         let excess_with_drain_weight = cs.excess(
-            self.target,
+            target,
             Drain {
                 weights: self.drain_weights,
                 value: 0,
@@ -60,21 +58,22 @@ impl LowestFee {
 }
 
 impl BnbMetric for LowestFee {
-    fn drain(&mut self, cs: &CoinSelector<'_>) -> Drain {
-        self.drain_value(cs).map_or(Drain::NONE, |value| Drain {
-            weights: self.drain_weights,
-            value,
-        })
+    fn drain(&mut self, cs: &CoinSelector<'_>, target: Target) -> Drain {
+        self.drain_value(cs, target)
+            .map_or(Drain::NONE, |value| Drain {
+                weights: self.drain_weights,
+                value,
+            })
     }
 
-    fn score(&mut self, cs: &CoinSelector<'_>) -> Option<Ordf32> {
-        if !cs.is_target_met(self.target) {
+    fn score(&mut self, cs: &CoinSelector<'_>, target: Target) -> Option<Ordf32> {
+        if !cs.is_target_met(target) {
             return None;
         }
 
         let long_term_fee = {
-            let drain = self.drain(cs);
-            let fee_for_the_tx = cs.fee(self.target.value(), drain.value);
+            let drain = self.drain(cs, target);
+            let fee_for_the_tx = cs.fee(target.value(), drain.value);
             assert!(
                 fee_for_the_tx >= 0,
                 "must not be called unless selection has met target: fee={}",
@@ -89,9 +88,9 @@ impl BnbMetric for LowestFee {
         Some(Ordf32(long_term_fee as f32))
     }
 
-    fn bound(&mut self, cs: &CoinSelector<'_>) -> Option<Ordf32> {
-        if cs.is_target_met(self.target) {
-            let current_score = self.score(cs).unwrap();
+    fn bound(&mut self, cs: &CoinSelector<'_>, target: Target) -> Option<Ordf32> {
+        if cs.is_target_met(target) {
+            let current_score = self.score(cs, target).unwrap();
 
             // `current_score` is already a valid lower bound for a selection that has change: a
             // descendant can never lower the fee by removing an existing (worthwhile) change
@@ -112,17 +111,17 @@ impl BnbMetric for LowestFee {
             // `drain_value`, where `change_value` is `excess_with_drain_weight` and `spend_fee` is
             // `drain_spend_cost`). With `v >= 0` the difference is strictly positive: B always
             // costs more.
-            if self.drain_value(cs).is_none() {
+            if self.drain_value(cs, target).is_none() {
                 // But a descendant might *add* a change output that improves the metric. This
                 // happens when the current selection is changeless only because the change would be
                 // dust: a descendant with more excess could clear the dust threshold and recover
                 // value that is currently burned to fees.
                 let cost_of_adding_change = self.drain_weights.waste(
-                    self.target.fee.rate,
+                    target.fee.rate,
                     self.long_term_feerate,
-                    self.target.outputs.n_outputs,
+                    target.outputs.n_outputs,
                 );
-                let cost_of_no_change = cs.excess(self.target, Drain::NONE);
+                let cost_of_no_change = cs.excess(target, Drain::NONE);
 
                 let best_score_with_change =
                     Ordf32(current_score.0 - cost_of_no_change as f32 + cost_of_adding_change);
@@ -137,11 +136,11 @@ impl BnbMetric for LowestFee {
             let (mut cs, resize_index, to_resize) = cs
                 .clone()
                 .select_iter()
-                .find(|(cs, _, _)| cs.is_target_met(self.target))?;
+                .find(|(cs, _, _)| cs.is_target_met(target))?;
 
             // If this selection is already perfect, return its score directly.
-            if cs.excess(self.target, Drain::NONE) == 0 {
-                return Some(self.score(&cs).unwrap());
+            if cs.excess(target, Drain::NONE) == 0 {
+                return Some(self.score(&cs, target).unwrap());
             };
             cs.deselect(resize_index);
 
@@ -162,13 +161,12 @@ impl BnbMetric for LowestFee {
             //
             // In the perfect scenario, no additional fee would be required to pay for rounding up when converting from weight units to
             // vbytes and so all fee calculations below are performed on weight units directly.
-            let rate_excess = cs.rate_excess_wu(self.target, Drain::NONE) as f32;
+            let rate_excess = cs.rate_excess_wu(target, Drain::NONE) as f32;
             let mut scale = Ordf32(0.0);
 
             if rate_excess < 0.0 {
                 let remaining_value_to_reach_feerate = rate_excess.abs();
-                let effective_value_of_resized_input =
-                    to_resize.effective_value(self.target.fee.rate);
+                let effective_value_of_resized_input = to_resize.effective_value(target.fee.rate);
                 if effective_value_of_resized_input > 0.0 {
                     let feerate_scale =
                         remaining_value_to_reach_feerate / effective_value_of_resized_input;
@@ -180,8 +178,8 @@ impl BnbMetric for LowestFee {
 
             // We can use the same approach for replacement we just have to use the
             // incremental_relay_feerate.
-            if let Some(replace) = self.target.fee.replace {
-                let replace_excess = cs.replacement_excess_wu(self.target, Drain::NONE) as f32;
+            if let Some(replace) = target.fee.replace {
+                let replace_excess = cs.replacement_excess_wu(target, Drain::NONE) as f32;
                 if replace_excess < 0.0 {
                     let remaining_value_to_reach_feerate = replace_excess.abs();
                     let effective_value_of_resized_input =
@@ -198,7 +196,7 @@ impl BnbMetric for LowestFee {
             // Handle absolute fee constraint. Unlike feerate and replacement, the
             // absolute fee is a fixed amount (not weight-proportional), so we just
             // need enough raw value to cover the gap.
-            let absolute_excess = cs.absolute_excess(self.target, Drain::NONE) as f32;
+            let absolute_excess = cs.absolute_excess(target, Drain::NONE) as f32;
             if absolute_excess < 0.0 {
                 let remaining = absolute_excess.abs();
                 if to_resize.value > 0 {
@@ -212,7 +210,7 @@ impl BnbMetric for LowestFee {
             // `scale` could be 0 even if `is_target_met` is `false` due to the latter being based on
             // rounded-up vbytes.
             let ideal_fee = scale.0 * to_resize.value as f32 + cs.selected_value() as f32
-                - self.target.value() as f32;
+                - target.value() as f32;
             assert!(ideal_fee >= 0.0);
 
             Some(Ordf32(ideal_fee))

@@ -68,17 +68,15 @@ proptest! {
             }
         };
 
-        let make_metric = || Changeless {
-            target,
-            inner: LowestFee {
-                target,
+        let make_metric = || {
+            Changeless(LowestFee {
                 long_term_feerate: feerate,
                 dust_relay_feerate: FeeRate::from_sat_per_vb(1.0),
                 drain_weights,
-            },
+            })
         };
 
-        let solutions = cs.bnb_solutions(make_metric());
+        let solutions = cs.bnb_solutions(target, make_metric());
 
         println!("candidates: {:#?}", cs.candidates().collect::<Vec<_>>());
 
@@ -95,7 +93,7 @@ proptest! {
             None => {
                 let mut cs = cs.clone();
                 let mut metric = make_metric();
-                let has_solution = common::exhaustive_search(&mut cs, &mut metric).is_some();
+                let has_solution = common::exhaustive_search(&mut cs, target, &mut metric).is_some();
                 dbg!(format!("{}", cs));
                 assert!(!has_solution);
             }

@@ -140,7 +140,6 @@ let dust_relay_feerate = FeeRate::from_sat_per_vb(3.0);
 // decides for itself whether to add a change output: change is added whenever doing so reduces the
 // long-term fee (factoring in the cost to spend the output later on) and the change wouldn't be dust.
 let mut metric = LowestFee {
-    target,
     long_term_feerate, // used to calculate the cost of spending the change output in the future
     dust_relay_feerate,
     drain_weights,
@@ -148,13 +147,13 @@ let mut metric = LowestFee {
 
 // We run the branch and bound algorithm with a max round limit of 100,000.
 // On success it returns the score along with the change output the metric decided on.
-let change = match coin_selector.run_bnb(metric, 100_000) {
+let change = match coin_selector.run_bnb(target, metric, 100_000) {
     Err(err) => {
         println!("failed to find a solution: {}", err);
         // fall back to naive selection
         coin_selector.select_until_target_met(target).expect("a selection was impossible!");
         // the metric still decides the change output for whatever we end up selecting
-        metric.drain(&coin_selector)
+        metric.drain(&coin_selector, target)
     }
     Ok((score, change)) => {
         println!("we found a solution with score {}", score);
