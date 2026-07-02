@@ -16,6 +16,9 @@ pub use bitset::*;
 mod coin_selector;
 pub mod float;
 pub use coin_selector::*;
+mod selection_view;
+use selection_view::SelectionCache;
+pub use selection_view::SelectionView;
 
 mod bnb;
 pub use bnb::*;
@@ -59,7 +62,7 @@ pub const TR_KEYSPEND_TXIN_WEIGHT: u64 = TXIN_BASE_WEIGHT + TR_KEYSPEND_SATISFAC
 pub const TR_DUST_RELAY_MIN_VALUE: u64 = 330;
 
 /// Helper to calculate varint size. `v` is the value the varint represents.
-const fn varint_size(v: usize) -> u64 {
+pub(crate) const fn varint_size(v: usize) -> u64 {
     if v <= 0xfc {
         return 1;
     }

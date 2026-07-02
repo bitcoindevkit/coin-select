@@ -50,11 +50,14 @@ fn segwit_one_input_one_output() {
     coin_selector.select_all();
 
     assert_eq!(
-        coin_selector.weight(target_ouputs, DrainWeights::NONE),
+        coin_selector
+            .compute_view()
+            .weight(target_ouputs, DrainWeights::NONE),
         tx.weight().to_wu()
     );
     assert_eq!(
         (coin_selector
+            .compute_view()
             .implied_feerate(target_ouputs, Drain::NONE)
             .unwrap()
             .as_sat_vb()
@@ -94,11 +97,14 @@ fn segwit_two_inputs_one_output() {
     coin_selector.select_all();
 
     assert_eq!(
-        coin_selector.weight(target_ouputs, DrainWeights::NONE),
+        coin_selector
+            .compute_view()
+            .weight(target_ouputs, DrainWeights::NONE),
         tx.weight().to_wu()
     );
     assert_eq!(
         (coin_selector
+            .compute_view()
             .implied_feerate(target_ouputs, Drain::NONE)
             .unwrap()
             .as_sat_vb()
@@ -137,11 +143,14 @@ fn legacy_three_inputs() {
     coin_selector.select_all();
 
     assert_eq!(
-        coin_selector.weight(target_ouputs, DrainWeights::NONE),
+        coin_selector
+            .compute_view()
+            .weight(target_ouputs, DrainWeights::NONE),
         orig_weight.to_wu()
     );
     assert_eq!(
         (coin_selector
+            .compute_view()
             .implied_feerate(target_ouputs, Drain::NONE)
             .unwrap()
             .as_sat_vb()
@@ -195,7 +204,9 @@ fn legacy_three_inputs_one_segwit() {
     coin_selector.select_all();
 
     assert_eq!(
-        coin_selector.weight(target_ouputs, DrainWeights::NONE),
+        coin_selector
+            .compute_view()
+            .weight(target_ouputs, DrainWeights::NONE),
         tx.weight().to_wu()
     );
 }
