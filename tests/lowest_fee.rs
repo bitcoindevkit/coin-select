@@ -30,9 +30,8 @@ proptest! {
     ) {
         let params = common::StrategyParams { n_candidates, target_value, n_target_outputs, target_weight, replace, feerate, feerate_lt_diff, drain_weight, drain_spend_weight, drain_dust, n_drain_outputs };
         let candidates = common::gen_candidates(params.n_candidates);
-        let change_policy = ChangePolicy::min_value(params.drain_weights(), params.drain_dust);
-        let metric = LowestFee { target: params.target(), long_term_feerate: params.long_term_feerate(), change_policy };
-        common::can_eventually_find_best_solution(params, candidates, change_policy, metric)?;
+        let metric = params.lowest_fee_metric();
+        common::can_eventually_find_best_solution(params, candidates, metric)?;
     }
 
     #[test]
@@ -52,9 +51,8 @@ proptest! {
     ) {
         let params = common::StrategyParams { n_candidates, target_value, n_target_outputs, target_weight, replace, feerate, feerate_lt_diff, drain_weight, drain_spend_weight, drain_dust, n_drain_outputs };
         let candidates = common::gen_candidates(params.n_candidates);
-        let change_policy = ChangePolicy::min_value(params.drain_weights(), params.drain_dust);
-        let metric = LowestFee { target: params.target(), long_term_feerate: params.long_term_feerate(), change_policy };
-        common::ensure_bound_is_not_too_tight(params, candidates, change_policy, metric)?;
+        let metric = params.lowest_fee_metric();
+        common::ensure_bound_is_not_too_tight(params, candidates, metric)?;
     }
 
     #[test]
@@ -88,16 +86,7 @@ proptest! {
 
         let mut cs = CoinSelector::new(&candidates);
 
-        let change_policy = ChangePolicy::min_value(
-            params.drain_weights(),
-            params.drain_dust,
-        );
-
-        let metric = LowestFee {
-            target: params.target(),
-            long_term_feerate: params.long_term_feerate(),
-            change_policy,
-        };
+        let metric = params.lowest_fee_metric();
         let is_impossible = !cs.is_selection_possible(params.target());
         match common::bnb_search(&mut cs, metric, params.n_candidates * 10) {
             Ok((score, rounds)) => {
@@ -127,13 +116,14 @@ proptest! {
 
         let params = common::StrategyParams { n_candidates, target_value, n_target_outputs, target_weight, replace, feerate, feerate_lt_diff, drain_weight, drain_spend_weight, drain_dust, n_drain_outputs };
         let candidates = common::gen_candidates(params.n_candidates);
-        let change_policy = ChangePolicy::min_value(params.drain_weights(), params.drain_dust);
-        let metric = LowestFee { target: params.target(), long_term_feerate: params.long_term_feerate(), change_policy };
-        common::compare_against_benchmarks(params, candidates, change_policy, metric)?;
+        let metric = params.lowest_fee_metric();
+        common::compare_against_benchmarks(params, candidates, metric)?;
     }
 }
 
-/// We combine the `LowestFee` and `Changeless` metrics to derive a `ChangelessLowestFee` metric.
+/// We wrap `LowestFee` in `Changeless` to derive a metric that finds the lowest-fee changeless
+/// solution. Constraining to changeless should never take fewer rounds than the unconstrained
+/// `LowestFee`.
 #[test]
 fn combined_changeless_metric() {
     let params = common::StrategyParams {
@@ -154,37 +144,33 @@ fn combined_changeless_metric() {
     let mut cs_a = CoinSelector::new(&candidates);
     let mut cs_b = CoinSelector::new(&candidates);
 
-    let change_policy = ChangePolicy::min_value(params.drain_weights(), params.drain_dust);
-
-    let metric_lowest_fee = LowestFee {
-        target: params.target(),
-        long_term_feerate: params.long_term_feerate(),
-        change_policy,
-    };
+    let metric_lowest_fee = params.lowest_fee_metric();
 
     let metric_changeless = Changeless {
         target: params.target(),
-        change_policy,
+        inner: params.lowest_fee_metric(),
     };
 
-    let metric_combined = ((metric_lowest_fee, 1.0_f32), (metric_changeless, 0.0_f32));
-
-    // cs_a uses the non-combined metric
+    // cs_a uses the unconstrained metric
     let (score, rounds) =
         common::bnb_search(&mut cs_a, metric_lowest_fee, usize::MAX).expect("must find solution");
     println!("score={:?} rounds={}", score, rounds);
 
-    // cs_b uses the combined metric
+    // cs_b uses the changeless-constrained metric
     let (combined_score, combined_rounds) =
-        common::bnb_search(&mut cs_b, metric_combined, usize::MAX).expect("must find solution");
+        common::bnb_search(&mut cs_b, metric_changeless, usize::MAX).expect("must find solution");
     println!("score={:?} rounds={}", combined_score, combined_rounds);
 
     assert!(combined_rounds >= rounds);
 }
 
-/// This test considers the case where you could actually lower your long term fee by adding another input.
+/// Because this metric decides change optimally, it never creates a change output whose value
+/// wouldn't cover the future cost of spending it. Here a single input overshoots the target by only
+/// ~130 sats — far less than the drain's spend cost — so the fee-optimal choice is to burn the
+/// excess (changeless) rather than add not-worth-it change, and adding a further input to shed the
+/// excess only raises the fee.
 #[test]
-fn adding_another_input_to_remove_change() {
+fn does_not_create_change_below_spend_cost() {
     let target = Target {
         fee: TargetFee::default(),
         outputs: TargetOutputs {
@@ -218,54 +204,40 @@ fn adding_another_input_to_remove_change() {
 
     let mut cs = CoinSelector::new(&candidates);
 
-    let best_solution = {
-        let mut cs = cs.clone();
-        cs.select(0);
-        cs.select(2);
-        cs.excess(target, Drain::NONE);
-        assert!(cs.is_target_met(target));
-        cs
-    };
-
     let drain_weights = DrainWeights {
         output_weight: 100,
         spend_weight: 1_000,
         n_outputs: 1,
     };
 
-    let excess_to_make_first_candidate_satisfy_but_have_change = {
-        let mut cs = cs.clone();
-        cs.select(0);
-        assert!(cs.is_target_met(target));
-        let with_change_excess = cs.excess(
-            target,
-            Drain {
-                value: 0,
-                weights: drain_weights,
-            },
-        );
-        assert!(with_change_excess > 0);
-        with_change_excess as u64
-    };
-
-    let change_policy = ChangePolicy {
-        min_value: excess_to_make_first_candidate_satisfy_but_have_change - 10,
-        drain_weights,
-    };
-
     let mut metric = LowestFee {
         target,
         long_term_feerate: FeeRate::from_sat_per_vb(1.0),
-        change_policy,
+        dust_relay_feerate: FeeRate::from_sat_per_vb(1.0),
+        drain_weights,
     };
 
     let (score, _) = common::bnb_search(&mut cs, metric, 10).expect("finds solution");
-    let best_solution_score = metric.score(&best_solution).expect("must be a solution");
 
-    assert_eq!(best_solution.drain(target, change_policy), Drain::NONE);
+    // The optimal selection is candidate 0 alone, and it must be changeless.
+    let expected = {
+        let mut expected = CoinSelector::new(&candidates);
+        expected.select(0);
+        expected
+    };
+    assert_eq!(cs.selected_indices(), expected.selected_indices());
+    assert!(
+        metric.drain(&cs).is_none(),
+        "optimal selection must be changeless"
+    );
 
-    assert!(score <= best_solution_score);
-    assert_eq!(cs.selected_indices(), best_solution.selected_indices());
+    // Adding the negative-effective-value input to shed the excess only raises the fee.
+    let with_extra_input = {
+        let mut with_extra_input = expected.clone();
+        with_extra_input.select(2);
+        with_extra_input
+    };
+    assert!(score <= metric.score(&with_extra_input).expect("target is met"));
 }
 
 #[test]
@@ -311,12 +283,8 @@ fn zero_fee_tx() {
     let metric = LowestFee {
         target,
         long_term_feerate,
-        change_policy: ChangePolicy::min_value_and_waste(
-            drain_weights,
-            50,
-            target_feerate,
-            long_term_feerate,
-        ),
+        dust_relay_feerate: FeeRate::from_sat_per_vb(1.0),
+        drain_weights,
     };
     let (_score, _rounds) = common::bnb_search(&mut cs, metric, 1000).expect("must find solution");
 }
