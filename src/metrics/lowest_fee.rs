@@ -1,4 +1,4 @@
-use crate::{float::Ordf32, BnbMetric, ChangePolicy, CoinSelector, Drain, FeeRate, Target};
+use crate::{float::Ordf32, BnbMetric, CoinSelector, Drain, DrainWeights, FeeRate, Target};
 
 /// Metric that aims to minimize transaction fees. The future fee for spending the change output is
 /// included in this calculation.
@@ -11,25 +11,71 @@ use crate::{float::Ordf32, BnbMetric, ChangePolicy, CoinSelector, Drain, FeeRate
 ///
 /// > `change_spend_weight * long_term_feerate`
 ///
-/// The `change_spend_weight` and `change_value` are determined by the `change_policy`
+/// Unlike other metrics, `LowestFee` decides for itself whether a selection should have a change
+/// output: change is added whenever doing so lowers the long-term fee (i.e. the recovered excess
+/// outweighs the future cost of spending the change) and the resulting change value is above the
+/// dust threshold implied by `dust_relay_feerate`.
 #[derive(Clone, Copy)]
 pub struct LowestFee {
     /// The target parameters for the resultant selection.
     pub target: Target,
     /// The estimated feerate needed to spend our change output later.
     pub long_term_feerate: FeeRate,
-    /// Policy to determine the change output (if any) of a given selection.
-    pub change_policy: ChangePolicy,
+    /// The feerate used to determine the dust threshold of the change output.
+    pub dust_relay_feerate: FeeRate,
+    /// The weights of the change output that would be added.
+    pub drain_weights: DrainWeights,
+}
+
+impl LowestFee {
+    /// The value the change output should have, or `None` if this selection should be changeless.
+    fn drain_value(&self, cs: &CoinSelector<'_>) -> Option<u64> {
+        // The change output pays for its own weight, so the value we'd actually recover is the
+        // excess remaining after accounting for that weight.
+        let excess_with_drain_weight = cs.excess(
+            self.target,
+            Drain {
+                weights: self.drain_weights,
+                value: 0,
+            },
+        );
+
+        // Adding change is only worth it if the value we'd recover exceeds the future cost of
+        // spending it (i.e. it lowers the long-term fee).
+        let drain_spend_cost = self
+            .long_term_feerate
+            .implied_fee_wu(self.drain_weights.spend_weight);
+        if excess_with_drain_weight <= drain_spend_cost as i64 {
+            return None;
+        }
+
+        // ...and only if the change output would not be dust.
+        let dust_threshold = self
+            .dust_relay_feerate
+            .implied_fee_wu(self.drain_weights.output_weight + self.drain_weights.spend_weight);
+        if excess_with_drain_weight < dust_threshold as i64 {
+            return None;
+        }
+
+        Some(excess_with_drain_weight.unsigned_abs())
+    }
 }
 
 impl BnbMetric for LowestFee {
+    fn drain(&mut self, cs: &CoinSelector<'_>) -> Drain {
+        self.drain_value(cs).map_or(Drain::NONE, |value| Drain {
+            weights: self.drain_weights,
+            value,
+        })
+    }
+
     fn score(&mut self, cs: &CoinSelector<'_>) -> Option<Ordf32> {
         if !cs.is_target_met(self.target) {
             return None;
         }
 
         let long_term_fee = {
-            let drain = cs.drain(self.target, self.change_policy);
+            let drain = self.drain(cs);
             let fee_for_the_tx = cs.fee(self.target.value(), drain.value);
             assert!(
                 fee_for_the_tx >= 0,
@@ -49,52 +95,31 @@ impl BnbMetric for LowestFee {
         if cs.is_target_met(self.target) {
             let current_score = self.score(cs).unwrap();
 
-            let drain_value = cs.drain_value(self.target, self.change_policy);
-
-            // I think this whole if statement could be removed if we made this metric decide the change policy
-            if let Some(drain_value) = drain_value {
-                // it's possible that adding another input might reduce your long term fee if it
-                // gets rid of an expensive change output. Our strategy is to take the lowest sat
-                // per value candidate we have and use it as a benchmark. We imagine it has the
-                // perfect value (but the same sats per weight unit) to get rid of the change output
-                // by adding negative effective value (i.e. perfectly reducing excess to the point
-                // where change wouldn't be added according to the policy).
-                //
-                // TODO: This metric could be tighter by being more complicated but this seems to be
-                // good enough for now.
-                let amount_above_change_threshold = drain_value - self.change_policy.min_value;
-
-                if let Some((_, low_sats_per_wu_candidate)) = cs.unselected().next_back() {
-                    let ev = low_sats_per_wu_candidate.effective_value(self.target.fee.rate);
-                    // we can only reduce excess if ev is negative
-                    if ev < -0.0 {
-                        let value_per_negative_effective_value =
-                            low_sats_per_wu_candidate.value as f32 / ev.abs();
-                        // this is how much absolute value we have to add to cancel out the excess
-                        let extra_value_needed_to_get_rid_of_change = amount_above_change_threshold
-                            as f32
-                            * value_per_negative_effective_value;
-
-                        // NOTE: the drain_value goes to fees if we get rid of it so it's part of
-                        // the cost of removing the change output
-                        let cost_of_getting_rid_of_change =
-                            extra_value_needed_to_get_rid_of_change + drain_value as f32;
-                        let cost_of_change = self.change_policy.drain_weights.waste(
-                            self.target.fee.rate,
-                            self.long_term_feerate,
-                            self.target.outputs.n_outputs,
-                        );
-                        let best_score_without_change = Ordf32(
-                            current_score.0 + cost_of_getting_rid_of_change - cost_of_change,
-                        );
-                        if best_score_without_change < current_score {
-                            return Some(best_score_without_change);
-                        }
-                    }
-                }
-            } else {
-                // Ok but maybe adding change could improve the metric?
-                let cost_of_adding_change = self.change_policy.drain_weights.waste(
+            // `current_score` is already a valid lower bound for a selection that has change: a
+            // descendant can never lower the fee by removing an existing (worthwhile) change
+            // output.
+            //
+            // Proof: let A be a selection with worthwhile change and let B = A + one extra input of
+            // value `v >= 0` that makes B changeless. The long-term fee (LTF, i.e. the score) of
+            // each is:
+            //
+            //     LTF_A = (selected_A - target - change_value) + spend_fee   // with change
+            //     LTF_B =  selected_B - target                               // changeless
+            //
+            // Substituting selected_B = selected_A + v:
+            //
+            //     LTF_B - LTF_A = v + change_value - spend_fee
+            //
+            // Change is only added when it's worthwhile, i.e. `change_value > spend_fee` (see
+            // `drain_value`, where `change_value` is `excess_with_drain_weight` and `spend_fee` is
+            // `drain_spend_cost`). With `v >= 0` the difference is strictly positive: B always
+            // costs more.
+            if self.drain_value(cs).is_none() {
+                // But a descendant might *add* a change output that improves the metric. This
+                // happens when the current selection is changeless only because the change would be
+                // dust: a descendant with more excess could clear the dust threshold and recover
+                // value that is currently burned to fees.
+                let cost_of_adding_change = self.drain_weights.waste(
                     self.target.fee.rate,
                     self.long_term_feerate,
                     self.target.outputs.n_outputs,

@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
 use bdk_coin_select::{
-    float::Ordf32, BnbMetric, Candidate, ChangePolicy, CoinSelector, Drain, DrainWeights, FeeRate,
-    NoBnbSolution, Replace, Target, TargetFee, TargetOutputs,
+    float::Ordf32, metrics::LowestFee, BnbMetric, Candidate, CoinSelector, Drain, DrainWeights,
+    FeeRate, NoBnbSolution, Replace, Target, TargetFee, TargetOutputs,
 };
 use proptest::{
     prelude::*,
@@ -33,11 +33,10 @@ pub fn maybe_replace(
 pub fn can_eventually_find_best_solution<M>(
     params: StrategyParams,
     candidates: Vec<Candidate>,
-    change_policy: ChangePolicy,
     mut metric: M,
 ) -> Result<(), proptest::test_runner::TestCaseError>
 where
-    M: BnbMetric,
+    M: BnbMetric + Clone,
 {
     println!("== TEST ==");
     println!("{}", type_name::<M>());
@@ -56,7 +55,7 @@ where
     println!("\texhaustive search:");
     let now = std::time::Instant::now();
     let exp_result = exhaustive_search(&mut exp_selection, &mut metric);
-    let exp_change = exp_selection.drain(target, change_policy);
+    let exp_change = metric.drain(&exp_selection);
     let exp_result_str = result_string(&exp_result.ok_or("no possible solution"), exp_change);
     println!(
         "\t\telapsed={:8}s result={}",
@@ -66,7 +65,7 @@ where
     // bonus check: ensure replacement fee is respected
     if exp_result.is_some() {
         let selected_value = exp_selection.selected_value();
-        let drain = exp_selection.drain(target, change_policy);
+        let drain = metric.drain(&exp_selection);
         let target_value = target.value();
         let replace_fee = params
             .replace
@@ -80,8 +79,9 @@ where
 
     println!("\tbranch and bound:");
     let now = std::time::Instant::now();
+    let mut bnb_metric = metric.clone();
     let result = bnb_search(&mut selection, metric, usize::MAX);
-    let change = selection.drain(target, change_policy);
+    let change = bnb_metric.drain(&selection);
     let result_str = result_string(&result, change);
     println!(
         "\t\telapsed={:8}s result={}",
@@ -105,7 +105,7 @@ where
 
             // bonus check: ensure replacement fee is respected
             let selected_value = selection.selected_value();
-            let drain = selection.drain(target, change_policy);
+            let drain = bnb_metric.drain(&selection);
             let target_value = target.value();
             let replace_fee = params
                 .replace
@@ -129,7 +129,6 @@ where
 pub fn ensure_bound_is_not_too_tight<M>(
     params: StrategyParams,
     candidates: Vec<Candidate>,
-    change_policy: ChangePolicy,
     mut metric: M,
 ) -> Result<(), proptest::test_runner::TestCaseError>
 where
@@ -156,12 +155,13 @@ where
             // possible (can overshoot) traversing down this branch. Let's check that!
 
             if let Some(score) = metric.score(&cs) {
+                let has_change = metric.drain(&cs).is_some();
                 prop_assert!(
                     score >= lb_score,
                     "checking branch: selection={} score={} change={} lb={}",
                     cs,
                     score,
-                    cs.drain_value(target, change_policy).is_some(),
+                    has_change,
                     lb_score
                 );
             }
@@ -172,6 +172,8 @@ where
                 .filter(|(_, inc)| *inc)
             {
                 if let Some(descendant_score) = metric.score(&descendant_cs) {
+                    let parent_has_change = metric.drain(&cs).is_some();
+                    let descendant_has_change = metric.drain(&descendant_cs).is_some();
                     prop_assert!(
                         descendant_score >= lb_score,
                         "
@@ -179,11 +181,11 @@ where
                         descendant={:8} change={} score={}
                         ",
                         cs,
-                        cs.drain_value(target, change_policy).is_some(),
+                        parent_has_change,
                         lb_score,
                         cs.is_target_met(target),
                         descendant_cs,
-                        descendant_cs.drain_value(target, change_policy).is_some(),
+                        descendant_has_change,
                         descendant_score,
                     );
                 }
@@ -237,6 +239,19 @@ impl StrategyParams {
             output_weight: self.drain_weight as u64,
             spend_weight: self.drain_spend_weight as u64,
             n_outputs: self.n_drain_outputs,
+        }
+    }
+
+    pub fn dust_relay_feerate(&self) -> FeeRate {
+        FeeRate::from_sat_per_vb(3.0)
+    }
+
+    pub fn lowest_fee_metric(&self) -> LowestFee {
+        LowestFee {
+            target: self.target(),
+            long_term_feerate: self.long_term_feerate(),
+            dust_relay_feerate: self.dust_relay_feerate(),
+            drain_weights: self.drain_weights(),
         }
     }
 }
@@ -396,7 +411,6 @@ where
 pub fn compare_against_benchmarks<M: BnbMetric + Clone>(
     params: StrategyParams,
     candidates: Vec<Candidate>,
-    change_policy: ChangePolicy,
     mut metric: M,
 ) -> Result<(), TestCaseError> {
     println!("=======================================");
@@ -436,9 +450,9 @@ pub fn compare_against_benchmarks<M: BnbMetric + Clone>(
             ];
 
             // add some random selections -- technically it's possible that one of these is better but it's very unlikely if our algorithm is working correctly.
-            cmp_benchmarks.extend((0..10).map(|_| {
-                randomly_satisfy_target(&cs, target, change_policy, &mut rng, metric.clone())
-            }));
+            cmp_benchmarks.extend(
+                (0..10).map(|_| randomly_satisfy_target(&cs, target, &mut rng, metric.clone())),
+            );
 
             let cmp_benchmarks = cmp_benchmarks
                 .into_iter()
@@ -469,7 +483,6 @@ pub fn compare_against_benchmarks<M: BnbMetric + Clone>(
 fn randomly_satisfy_target<'a, R: rand::Rng>(
     cs: &CoinSelector<'a>,
     target: Target,
-    change_policy: ChangePolicy,
     rng: &mut R,
     mut metric: impl BnbMetric,
 ) -> CoinSelector<'a> {

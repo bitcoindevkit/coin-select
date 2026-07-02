@@ -2,9 +2,8 @@
 mod common;
 use bdk_coin_select::{
     float::Ordf32,
-    metrics::{self, Changeless},
-    Candidate, ChangePolicy, CoinSelector, Drain, DrainWeights, FeeRate, Target, TargetFee,
-    TargetOutputs,
+    metrics::{Changeless, LowestFee},
+    Candidate, CoinSelector, DrainWeights, FeeRate, Target, TargetFee, TargetOutputs,
 };
 use proptest::{prelude::*, proptest, test_runner::*};
 use rand::{prelude::IteratorRandom, Rng, RngCore};
@@ -51,7 +50,6 @@ proptest! {
             n_outputs: n_drain_outputs,
         };
 
-        let change_policy = ChangePolicy::min_value(drain_weights, 100);
         let wv = test_wv(&mut rng);
         let candidates = wv.take(n_candidates).collect::<Vec<_>>();
 
@@ -70,10 +68,17 @@ proptest! {
             }
         };
 
-        let solutions = cs.bnb_solutions(metrics::Changeless {
+        let make_metric = || Changeless {
             target,
-            change_policy
-        });
+            inner: LowestFee {
+                target,
+                long_term_feerate: feerate,
+                dust_relay_feerate: FeeRate::from_sat_per_vb(1.0),
+                drain_weights,
+            },
+        };
+
+        let solutions = cs.bnb_solutions(make_metric());
 
         println!("candidates: {:#?}", cs.candidates().collect::<Vec<_>>());
 
@@ -89,7 +94,7 @@ proptest! {
             }
             None => {
                 let mut cs = cs.clone();
-                let mut metric = metrics::Changeless { target, change_policy };
+                let mut metric = make_metric();
                 let has_solution = common::exhaustive_search(&mut cs, &mut metric).is_some();
                 dbg!(format!("{}", cs));
                 assert!(!has_solution);

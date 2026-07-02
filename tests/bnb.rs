@@ -50,35 +50,9 @@ impl BnbMetric for MinExcessThenWeight {
         cs.select_until_target_met(self.target).ok()?;
         Some(Ordf32(cs.input_weight() as f32))
     }
-}
 
-#[derive(Clone, Copy)]
-struct OrderSensitive;
-
-impl BnbMetric for OrderSensitive {
-    fn score(&mut self, _cs: &CoinSelector<'_>) -> Option<Ordf32> {
-        Some(Ordf32(0.0))
-    }
-
-    fn bound(&mut self, _cs: &CoinSelector<'_>) -> Option<Ordf32> {
-        Some(Ordf32(0.0))
-    }
-
-    fn requires_ordering_by_descending_value_pwu(&self) -> bool {
-        true
-    }
-}
-
-#[derive(Clone, Copy)]
-struct NoOrderMetric;
-
-impl BnbMetric for NoOrderMetric {
-    fn score(&mut self, _cs: &CoinSelector<'_>) -> Option<Ordf32> {
-        Some(Ordf32(0.0))
-    }
-
-    fn bound(&mut self, _cs: &CoinSelector<'_>) -> Option<Ordf32> {
-        Some(Ordf32(0.0))
+    fn drain(&mut self, _cs: &CoinSelector<'_>) -> Drain {
+        Drain::NONE
     }
 }
 
@@ -167,24 +141,6 @@ fn bnb_finds_solution_if_possible_in_n_iter() {
     assert_eq!(rounds, 164);
     let excess = sol.excess(target, Drain::NONE);
     assert_eq!(excess, 0);
-}
-
-#[test]
-fn bnb_tuple_metric_respects_ordering_requirement() {
-    assert!(
-        ((OrderSensitive, 1.0), (OrderSensitive, 1.0)).requires_ordering_by_descending_value_pwu(),
-        "both require ordering, so ordering should be required"
-    );
-
-    assert!(
-        ((OrderSensitive, 1.0), (NoOrderMetric, 1.0)).requires_ordering_by_descending_value_pwu(),
-        "one requires ordering, so ordering should be required"
-    );
-
-    assert!(
-        !((NoOrderMetric, 1.0), (NoOrderMetric, 1.0)).requires_ordering_by_descending_value_pwu(),
-        "none require ordering, so ordering should not be required"
-    );
 }
 
 proptest! {

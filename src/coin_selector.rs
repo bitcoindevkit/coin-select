@@ -569,25 +569,28 @@ impl<'a> CoinSelector<'a> {
 
     /// Run branch and bound to minimize the score of the provided [`BnbMetric`].
     ///
-    /// The method keeps trying until no better solution can be found, or we reach `max_rounds`. If
-    /// a solution is found, the score is returned. Otherwise, we error with [`NoBnbSolution`].
+    /// The method keeps trying until no better solution can be found, or we reach `max_rounds`. If a
+    /// solution is found, the score and the change output ([`Drain`]) that the metric decided on are
+    /// returned. Otherwise, we error with [`NoBnbSolution`].
     ///
     /// Use [`CoinSelector::bnb_solutions`] to access the branch and bound iterator directly.
     pub fn run_bnb<M: BnbMetric>(
         &mut self,
         metric: M,
         max_rounds: usize,
-    ) -> Result<Ordf32, NoBnbSolution> {
+    ) -> Result<(Ordf32, Drain), NoBnbSolution> {
+        let mut iter = crate::bnb::BnbIter::new(self.clone(), metric);
         let mut rounds = 0_usize;
-        let (selector, score) = self
-            .bnb_solutions(metric)
-            .inspect(|_| rounds += 1)
+        let best = iter
+            .by_ref()
             .take(max_rounds)
+            .inspect(|_| rounds += 1)
             .flatten()
-            .last()
-            .ok_or(NoBnbSolution { max_rounds, rounds })?;
+            .last();
+        let (selector, score) = best.ok_or(NoBnbSolution { max_rounds, rounds })?;
+        let drain = iter.metric.drain(&selector);
         *self = selector;
-        Ok(score)
+        Ok((score, drain))
     }
 }
 

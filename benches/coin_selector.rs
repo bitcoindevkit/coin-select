@@ -9,8 +9,8 @@
 //! Run with `cargo bench`. Filter with `cargo bench -- <pattern>`.
 
 use bdk_coin_select::{
-    metrics::LowestFee, Candidate, ChangePolicy, CoinSelector, DrainWeights, FeeRate, Target,
-    TargetFee, TargetOutputs, TR_SPK_WEIGHT, TXIN_BASE_WEIGHT, TXOUT_BASE_WEIGHT,
+    metrics::LowestFee, Candidate, CoinSelector, DrainWeights, FeeRate, Target, TargetFee,
+    TargetOutputs, TR_SPK_WEIGHT, TXIN_BASE_WEIGHT, TXOUT_BASE_WEIGHT,
 };
 use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 use std::hint::black_box;
@@ -35,7 +35,7 @@ fn make_candidates(n: usize) -> Vec<Candidate> {
         .collect()
 }
 
-fn make_bnb_inputs(candidates: &[Candidate]) -> (Target, ChangePolicy, FeeRate) {
+fn make_bnb_inputs(candidates: &[Candidate]) -> (Target, FeeRate) {
     let target_fr = FeeRate::from_sat_per_vb(2.0);
     let long_term_fr = FeeRate::from_sat_per_vb(10.0);
     let total: u64 = candidates.iter().map(|c| c.value).sum();
@@ -43,9 +43,7 @@ fn make_bnb_inputs(candidates: &[Candidate]) -> (Target, ChangePolicy, FeeRate) 
         fee: TargetFee::from_feerate(target_fr),
         outputs: TargetOutputs::fund_outputs([(TXOUT_BASE_WEIGHT + TR_SPK_WEIGHT, total / 2)]),
     };
-    let change_policy =
-        ChangePolicy::min_value_and_waste(DrainWeights::TR_KEYSPEND, 294, target_fr, long_term_fr);
-    (target, change_policy, long_term_fr)
+    (target, long_term_fr)
 }
 
 fn bench_coin_selector_clone(c: &mut Criterion) {
@@ -71,7 +69,7 @@ fn bench_run_bnb_lowest_fee(c: &mut Criterion) {
     for &n in &[20usize, 50, 100, 200] {
         let candidates = make_candidates(n);
         let selector = CoinSelector::new(&candidates);
-        let (target, change_policy, long_term_feerate) = make_bnb_inputs(&candidates);
+        let (target, long_term_feerate) = make_bnb_inputs(&candidates);
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
             b.iter_batched(
                 || selector.clone(),
@@ -79,7 +77,8 @@ fn bench_run_bnb_lowest_fee(c: &mut Criterion) {
                     let metric = LowestFee {
                         target,
                         long_term_feerate,
-                        change_policy,
+                        dust_relay_feerate: FeeRate::from_sat_per_vb(1.0),
+                        drain_weights: DrainWeights::TR_KEYSPEND,
                     };
                     let _ = sel.run_bnb(metric, black_box(100_000));
                     sel

@@ -1,6 +1,6 @@
 use core::cmp::Reverse;
 
-use crate::float::Ordf32;
+use crate::{float::Ordf32, Drain};
 
 use super::CoinSelector;
 use alloc::collections::BinaryHeap;
@@ -12,7 +12,7 @@ pub(crate) struct BnbIter<'a, M: BnbMetric> {
     queue: BinaryHeap<Branch<'a>>,
     best: Option<Ordf32>,
     /// The `BnBMetric` that will score each selection
-    metric: M,
+    pub(crate) metric: M,
 }
 
 impl<'a, M: BnbMetric> Iterator for BnbIter<'a, M> {
@@ -212,6 +212,12 @@ pub trait BnbMetric {
     /// If this returns `None`, the current branch and all descendant branches will not have valid
     /// solutions.
     fn bound(&mut self, cs: &CoinSelector<'_>) -> Option<Ordf32>;
+
+    /// The change output (a.k.a. drain) this metric decides on for the given selection, or
+    /// [`Drain::NONE`] if it decides there should be no change.
+    ///
+    /// Call this on a branch-and-bound solution to get the change output the metric optimized against.
+    fn drain(&mut self, cs: &CoinSelector<'_>) -> Drain;
 
     /// Returns whether the metric requies we order candidates by descending value per weight unit.
     fn requires_ordering_by_descending_value_pwu(&self) -> bool {

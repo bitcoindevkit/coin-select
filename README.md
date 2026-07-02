@@ -87,7 +87,7 @@ metric by implementing the [`BnbMetric`] yourself but we don't recommend this.
 
 ```rust
 use std::str::FromStr;
-use bdk_coin_select::{ Candidate, CoinSelector, FeeRate, Target, TargetFee, TargetOutputs, ChangePolicy, TR_KEYSPEND_TXIN_WEIGHT, TR_DUST_RELAY_MIN_VALUE};
+use bdk_coin_select::{ BnbMetric, Candidate, CoinSelector, FeeRate, Target, TargetFee, TargetOutputs, TR_KEYSPEND_TXIN_WEIGHT};
 use bdk_coin_select::metrics::LowestFee;
 use bitcoin::{ Address, Amount, Network, Transaction, TxIn, TxOut };
 
@@ -132,36 +132,33 @@ let target = Target {
     outputs: TargetOutputs::fund_outputs(outputs.iter().map(|output| (output.weight().to_wu(), output.value.to_sat()))),
 };
 
-// The change output must be at least this size to be relayed.
-// To choose it you need to know the kind of script pubkey on your change txout.
-// Here we assume it's a taproot output
-let dust_limit = TR_DUST_RELAY_MIN_VALUE;
+// The feerate used to work out whether a change output would be dust (and so shouldn't be added).
+// The standard dust relay feerate is 3 sat/vb.
+let dust_relay_feerate = FeeRate::from_sat_per_vb(3.0);
 
-// We use a change policy that introduces a change output if doing so reduces
-// the "waste" (i.e. adding change doesn't increase the fees we'd pay if we factor in the cost to spend the output later on).
-let change_policy = ChangePolicy::min_value_and_waste(
-    drain_weights,
-    dust_limit,
-    target.fee.rate,
-    long_term_feerate,
-);
-
-// The LowestFee metric tries make selections that minimize your total fees paid over time.
-let metric = LowestFee {
+// The LowestFee metric tries to make selections that minimize your total fees paid over time. It
+// decides for itself whether to add a change output: change is added whenever doing so reduces the
+// long-term fee (factoring in the cost to spend the output later on) and the change wouldn't be dust.
+let mut metric = LowestFee {
     target,
-    long_term_feerate, // used to calculate the cost of spending th change output if the future
-    change_policy
+    long_term_feerate, // used to calculate the cost of spending the change output in the future
+    dust_relay_feerate,
+    drain_weights,
 };
 
 // We run the branch and bound algorithm with a max round limit of 100,000.
-match coin_selector.run_bnb(metric, 100_000) {
+// On success it returns the score along with the change output the metric decided on.
+let change = match coin_selector.run_bnb(metric, 100_000) {
     Err(err) => {
         println!("failed to find a solution: {}", err);
         // fall back to naive selection
         coin_selector.select_until_target_met(target).expect("a selection was impossible!");
+        // the metric still decides the change output for whatever we end up selecting
+        metric.drain(&coin_selector)
     }
-    Ok(score) => {
+    Ok((score, change)) => {
         println!("we found a solution with score {}", score);
+        change
     }
 };
 
@@ -169,7 +166,6 @@ match coin_selector.run_bnb(metric, 100_000) {
 let selection = coin_selector
    .apply_selection(&candidates)
    .collect::<Vec<_>>();
-let change = coin_selector.drain(target, change_policy);
 
 println!("we selected {} inputs", selection.len());
 println!("We are including a change output of {} value (0 means not change)", change.value);
