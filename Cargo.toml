@@ -1,6 +1,6 @@
 [package]
 name = "bdk_coin_select"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2018"
 #rust-version = "1.54"
 homepage = "https://bitcoindevkit.org"
@@ -24,3 +24,8 @@ std = []
 rand = "0.9"
 proptest = "1.7"
 bitcoin = "0.32"
+criterion = "0.5"
+
+[[bench]]
+name = "coin_selector"
+harness = false
