@@ -55,6 +55,16 @@ impl DrainWeights {
     pub fn spend_fee(&self, long_term_feerate: FeeRate) -> u64 {
         (self.spend_weight as f32 * long_term_feerate.spwu()).ceil() as u64
     }
+
+    /// The minimum value a change output with these weights must have to not be considered dust
+    /// according to `dust_relay_feerate`.
+    ///
+    /// A change output is dust when the fee to relay it plus the fee to later spend it exceeds its
+    /// value, so the threshold is `dust_relay_feerate` applied to the output weight plus the spend
+    /// weight.
+    pub fn dust_threshold(&self, dust_relay_feerate: FeeRate) -> u64 {
+        dust_relay_feerate.implied_fee_wu(self.output_weight + self.spend_weight)
+    }
 }
 
 /// A drain (A.K.A. change) output.

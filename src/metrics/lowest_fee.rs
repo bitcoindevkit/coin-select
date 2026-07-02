@@ -50,9 +50,7 @@ impl LowestFee {
         }
 
         // ...and only if the change output would not be dust.
-        let dust_threshold = self
-            .dust_relay_feerate
-            .implied_fee_wu(self.drain_weights.output_weight + self.drain_weights.spend_weight);
+        let dust_threshold = self.drain_weights.dust_threshold(self.dust_relay_feerate);
         if excess_with_drain_weight < dust_threshold as i64 {
             return None;
         }
