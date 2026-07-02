@@ -75,12 +75,11 @@ fn bench_run_bnb_lowest_fee(c: &mut Criterion) {
                 || selector.clone(),
                 |mut sel| {
                     let metric = LowestFee {
-                        target,
                         long_term_feerate,
                         dust_relay_feerate: FeeRate::from_sat_per_vb(1.0),
                         drain_weights: DrainWeights::TR_KEYSPEND,
                     };
-                    let _ = sel.run_bnb(metric, black_box(100_000));
+                    let _ = sel.run_bnb(target, metric, black_box(100_000));
                     sel
                 },
                 BatchSize::SmallInput,

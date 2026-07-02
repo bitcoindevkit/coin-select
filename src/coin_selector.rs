@@ -562,9 +562,10 @@ impl<'a> CoinSelector<'a> {
     /// Most of the time, you would want to use [`CoinSelector::run_bnb`] instead.
     pub fn bnb_solutions<M: BnbMetric>(
         &self,
+        target: Target,
         metric: M,
     ) -> impl Iterator<Item = Option<(CoinSelector<'a>, Ordf32)>> {
-        crate::bnb::BnbIter::new(self.clone(), metric)
+        crate::bnb::BnbIter::new(self.clone(), target, metric)
     }
 
     /// Run branch and bound to minimize the score of the provided [`BnbMetric`].
@@ -576,10 +577,11 @@ impl<'a> CoinSelector<'a> {
     /// Use [`CoinSelector::bnb_solutions`] to access the branch and bound iterator directly.
     pub fn run_bnb<M: BnbMetric>(
         &mut self,
+        target: Target,
         metric: M,
         max_rounds: usize,
     ) -> Result<(Ordf32, Drain), NoBnbSolution> {
-        let mut iter = crate::bnb::BnbIter::new(self.clone(), metric);
+        let mut iter = crate::bnb::BnbIter::new(self.clone(), target, metric);
         let mut rounds = 0_usize;
         let best = iter
             .by_ref()
@@ -588,7 +590,7 @@ impl<'a> CoinSelector<'a> {
             .flatten()
             .last();
         let (selector, score) = best.ok_or(NoBnbSolution { max_rounds, rounds })?;
-        let drain = iter.metric.drain(&selector);
+        let drain = iter.metric.drain(&selector, target);
         *self = selector;
         Ok((score, drain))
     }

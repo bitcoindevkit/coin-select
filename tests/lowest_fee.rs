@@ -88,7 +88,7 @@ proptest! {
 
         let metric = params.lowest_fee_metric();
         let is_impossible = !cs.is_selection_possible(params.target());
-        match common::bnb_search(&mut cs, metric, params.n_candidates * 10) {
+        match common::bnb_search(&mut cs, params.target(), metric, params.n_candidates * 10) {
             Ok((score, rounds)) => {
                 // the +1 is because the iterator will always try selecting nothing as a solution so we have
                 // to do one extra iteration to try that
@@ -144,21 +144,20 @@ fn combined_changeless_metric() {
     let mut cs_a = CoinSelector::new(&candidates);
     let mut cs_b = CoinSelector::new(&candidates);
 
+    let target = params.target();
     let metric_lowest_fee = params.lowest_fee_metric();
 
-    let metric_changeless = Changeless {
-        target: params.target(),
-        inner: params.lowest_fee_metric(),
-    };
+    let metric_changeless = Changeless(params.lowest_fee_metric());
 
     // cs_a uses the unconstrained metric
-    let (score, rounds) =
-        common::bnb_search(&mut cs_a, metric_lowest_fee, usize::MAX).expect("must find solution");
+    let (score, rounds) = common::bnb_search(&mut cs_a, target, metric_lowest_fee, usize::MAX)
+        .expect("must find solution");
     println!("score={:?} rounds={}", score, rounds);
 
     // cs_b uses the changeless-constrained metric
     let (combined_score, combined_rounds) =
-        common::bnb_search(&mut cs_b, metric_changeless, usize::MAX).expect("must find solution");
+        common::bnb_search(&mut cs_b, target, metric_changeless, usize::MAX)
+            .expect("must find solution");
     println!("score={:?} rounds={}", combined_score, combined_rounds);
 
     assert!(combined_rounds >= rounds);
@@ -211,13 +210,12 @@ fn does_not_create_change_below_spend_cost() {
     };
 
     let mut metric = LowestFee {
-        target,
         long_term_feerate: FeeRate::from_sat_per_vb(1.0),
         dust_relay_feerate: FeeRate::from_sat_per_vb(1.0),
         drain_weights,
     };
 
-    let (score, _) = common::bnb_search(&mut cs, metric, 10).expect("finds solution");
+    let (score, _) = common::bnb_search(&mut cs, target, metric, 10).expect("finds solution");
 
     // The optimal selection is candidate 0 alone, and it must be changeless.
     let expected = {
@@ -227,7 +225,7 @@ fn does_not_create_change_below_spend_cost() {
     };
     assert_eq!(cs.selected_indices(), expected.selected_indices());
     assert!(
-        metric.drain(&cs).is_none(),
+        metric.drain(&cs, target).is_none(),
         "optimal selection must be changeless"
     );
 
@@ -237,7 +235,12 @@ fn does_not_create_change_below_spend_cost() {
         with_extra_input.select(2);
         with_extra_input
     };
-    assert!(score <= metric.score(&with_extra_input).expect("target is met"));
+    assert!(
+        score
+            <= metric
+                .score(&with_extra_input, target)
+                .expect("target is met")
+    );
 }
 
 #[test]
@@ -281,10 +284,10 @@ fn zero_fee_tx() {
 
     let mut cs = CoinSelector::new(&candidates);
     let metric = LowestFee {
-        target,
         long_term_feerate,
         dust_relay_feerate: FeeRate::from_sat_per_vb(1.0),
         drain_weights,
     };
-    let (_score, _rounds) = common::bnb_search(&mut cs, metric, 1000).expect("must find solution");
+    let (_score, _rounds) =
+        common::bnb_search(&mut cs, target, metric, 1000).expect("must find solution");
 }

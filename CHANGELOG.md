@@ -1,5 +1,6 @@
 # Unreleased
 
+- **Breaking:** `BnbMetric`'s `score`, `bound`, and `drain` take the `target: Target` as a parameter, and `CoinSelector::run_bnb`/`bnb_solutions` gain a leading `target` argument. Consequently `LowestFee` and `Changeless` no longer store a `target` field. This removes the target that `Changeless<M>` previously had to keep in sync with its inner metric, and aligns the metric API with the rest of `CoinSelector`, where `target` is always passed in.
 - **Breaking:** `BnbMetric` metrics now decide the change output themselves. The trait gains a `drain(&mut self, cs) -> Drain` method; call it on a branch-and-bound solution (or the `LowestFee` metric directly) to get the change output the metric optimized against, instead of computing a separate `ChangePolicy`.
 - **Breaking:** `CoinSelector::run_bnb` now returns `(Ordf32, Drain)` instead of just `Ordf32`, handing back the change output the metric decided on for the winning selection.
 - **Breaking:** `LowestFee` no longer takes a `change_policy`. It now takes `dust_relay_feerate: FeeRate` and `drain_weights: DrainWeights`, and adds change only when doing so lowers the long-term fee and the change would not be dust.

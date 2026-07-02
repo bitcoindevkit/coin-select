@@ -26,16 +26,14 @@ fn test_wv(mut rng: impl RngCore) -> impl Iterator<Item = Candidate> {
 }
 
 /// This is just an exhaustive search
-struct MinExcessThenWeight {
-    target: Target,
-}
+struct MinExcessThenWeight;
 
 /// Assumes tx weight is less than 1MB.
 const EXCESS_RATIO: f32 = 1_000_000_f32;
 
 impl BnbMetric for MinExcessThenWeight {
-    fn score(&mut self, cs: &CoinSelector<'_>) -> Option<Ordf32> {
-        let excess = cs.excess(self.target, Drain::NONE);
+    fn score(&mut self, cs: &CoinSelector<'_>, target: Target) -> Option<Ordf32> {
+        let excess = cs.excess(target, Drain::NONE);
         if excess < 0 {
             None
         } else {
@@ -45,13 +43,13 @@ impl BnbMetric for MinExcessThenWeight {
         }
     }
 
-    fn bound(&mut self, cs: &CoinSelector<'_>) -> Option<Ordf32> {
+    fn bound(&mut self, cs: &CoinSelector<'_>, target: Target) -> Option<Ordf32> {
         let mut cs = cs.clone();
-        cs.select_until_target_met(self.target).ok()?;
+        cs.select_until_target_met(target).ok()?;
         Some(Ordf32(cs.input_weight() as f32))
     }
 
-    fn drain(&mut self, _cs: &CoinSelector<'_>) -> Drain {
+    fn drain(&mut self, _cs: &CoinSelector<'_>, _target: Target) -> Drain {
         Drain::NONE
     }
 }
@@ -94,7 +92,7 @@ fn bnb_finds_an_exact_solution_in_n_iter() {
         fee: TargetFee::ZERO,
     };
 
-    let solutions = cs.bnb_solutions(MinExcessThenWeight { target });
+    let solutions = cs.bnb_solutions(target, MinExcessThenWeight);
 
     let mut rounds = 0;
     let (best, score) = solutions
@@ -128,7 +126,7 @@ fn bnb_finds_solution_if_possible_in_n_iter() {
         fee: TargetFee::default(),
     };
 
-    let solutions = cs.bnb_solutions(MinExcessThenWeight { target });
+    let solutions = cs.bnb_solutions(target, MinExcessThenWeight);
 
     let mut rounds = 0;
     let (sol, _score) = solutions
@@ -156,7 +154,7 @@ proptest! {
             fee: TargetFee::ZERO,
         };
 
-        let solutions = cs.bnb_solutions(MinExcessThenWeight { target });
+        let solutions = cs.bnb_solutions(target, MinExcessThenWeight);
 
         match solutions.enumerate().filter_map(|(i, sol)| Some((i, sol?))).last() {
             Some((_i, (sol, _score))) => assert!(sol.selected_value() >= target_value),
@@ -202,7 +200,7 @@ proptest! {
             fee: TargetFee::ZERO,
         };
 
-        let solutions = cs.bnb_solutions(MinExcessThenWeight { target });
+        let solutions = cs.bnb_solutions(target, MinExcessThenWeight);
 
         let (_i, (best, _score)) = solutions
             .enumerate()
