@@ -161,7 +161,17 @@ impl BnbMetric for LowestFee {
 
                 let best_score_with_change =
                     Ordf32(current_score.0 - cost_of_no_change as f32 + cost_of_adding_change);
-                if best_score_with_change < current_score {
+                // max_weight-aware: recovering that value requires a change output (and more
+                // inputs to clear the dust threshold), which only makes the tx heavier. If a change
+                // output can't fit the cap now it never will down this branch, so don't credit the
+                // improvement — keep `current_score` (a tighter, still-admissible bound).
+                let change_output = Drain {
+                    weights: self.drain_weights,
+                    value: 0,
+                };
+                if best_score_with_change < current_score
+                    && cs.is_within_max_weight(target, change_output)
+                {
                     return Some(best_score_with_change);
                 }
             }
@@ -240,6 +250,19 @@ impl BnbMetric for LowestFee {
                     scale = scale.max(Ordf32(absolute_scale));
                 } else {
                     return None; // we can never satisfy the constraint
+                }
+            }
+
+            // max_weight-aware: reaching the feerate needs a perfect input weighing
+            // `scale * to_resize.weight`. `to_resize` is the best value-per-weight input available,
+            // so if even that (fractionally) can't fit the remaining weight budget, no within-cap
+            // selection down this branch reaches the target -> prune. This is the fractional
+            // relaxation, so it never prunes a branch that has an (integer) within-cap solution.
+            if let Some(max_weight) = target.max_weight {
+                let budget =
+                    max_weight.saturating_sub(cs.weight(target.outputs, DrainWeights::NONE));
+                if scale.0 * to_resize.weight as f32 > budget as f32 {
+                    return None;
                 }
             }
 
