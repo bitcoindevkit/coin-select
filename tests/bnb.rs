@@ -162,7 +162,7 @@ proptest! {
 
         match solutions.enumerate().filter_map(|(i, sol)| Some((i, sol?))).last() {
             Some((_i, (sol, _score))) => assert!(sol.selected_value() >= target_value),
-            _ => prop_assert!(!cs.is_selection_possible(target)),
+            _ => prop_assert!(!cs.is_fundable(target)),
         }
     }
 

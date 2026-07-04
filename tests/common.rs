@@ -190,7 +190,7 @@ where
                         cs,
                         parent_has_change,
                         lb_score,
-                        cs.is_target_met(target),
+                        cs.is_funded(target),
                         descendant_cs,
                         descendant_has_change,
                         descendant_score,
@@ -385,12 +385,12 @@ where
 /// current selection) meet `target`, i.e. cover the value **and** stay within `max_weight`?
 ///
 /// Enumerates every subset via [`ExhaustiveIter`] and reuses the real
-/// [`CoinSelector::is_target_met`] + [`CoinSelector::is_within_max_weight`], so it inherits the
+/// [`CoinSelector::is_funded`] + [`CoinSelector::is_within_max_weight`], so it inherits the
 /// exact weight model and is independent of the BnB weight prune it audits. Exponential — small `n`
 /// only.
 pub fn exact_selection_possible(cs: &CoinSelector, target: Target) -> bool {
     let feasible =
-        |s: &CoinSelector| s.is_target_met(target) && s.is_within_max_weight(target, Drain::NONE);
+        |s: &CoinSelector| s.is_funded(target) && s.is_within_max_weight(target, Drain::NONE);
     // the current selection itself (no additions) is a valid subset and isn't yielded by the iter
     feasible(cs)
         || ExhaustiveIter::new(cs)
@@ -523,7 +523,7 @@ pub fn compare_against_benchmarks<M: BnbMetric + Clone>(
             }
         }
         None => {
-            // Full feasibility (value *and* max_weight) is needed here; `is_selection_possible`
+            // Full feasibility (value *and* max_weight) is needed here; `is_fundable`
             // only covers value, so use the exact exhaustive oracle to assert impossibility.
             prop_assert!(!exact_selection_possible(&cs, target));
         }
@@ -545,7 +545,7 @@ fn randomly_satisfy_target<'a, R: rand::Rng>(
     let mut last_score: Option<Ordf32> = None;
     while let Some(next) = cs.unselected_indices().choose(rng) {
         cs.select(next);
-        if cs.is_target_met(target) {
+        if cs.is_funded(target) {
             let curr_score = metric.score(&cs, target);
             if let Some(last_score) = last_score {
                 if curr_score.is_none() || curr_score.unwrap() > last_score {

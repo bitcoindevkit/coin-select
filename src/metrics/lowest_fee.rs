@@ -73,7 +73,7 @@ impl LowestFee {
     /// inadmissible; [`score`](BnbMetric::score) reuses the returned drain for its cap check so the
     /// drain is only decided once.
     fn fee_score(&self, cs: &CoinSelector<'_>, target: Target) -> Option<(Ordf32, Drain)> {
-        if !cs.is_target_met(target) {
+        if !cs.is_funded(target) {
             return None;
         }
         let drain = self
@@ -125,7 +125,7 @@ impl BnbMetric for LowestFee {
             return None;
         }
 
-        if cs.is_target_met(target) {
+        if cs.is_funded(target) {
             let current_score = self.fee_score(cs, target).unwrap().0;
 
             // `current_score` is already a valid lower bound for a selection that has change: a
@@ -172,7 +172,7 @@ impl BnbMetric for LowestFee {
             let (mut cs, resize_index, to_resize) = cs
                 .clone()
                 .select_iter()
-                .find(|(cs, _, _)| cs.is_target_met(target))?;
+                .find(|(cs, _, _)| cs.is_funded(target))?;
 
             // If this selection is already perfect, return its score directly.
             if cs.excess(target, Drain::NONE) == 0 {
@@ -243,7 +243,7 @@ impl BnbMetric for LowestFee {
                 }
             }
 
-            // `scale` could be 0 even if `is_target_met` is `false` due to the latter being based on
+            // `scale` could be 0 even if `is_funded` is `false` due to the latter being based on
             // rounded-up vbytes.
             let ideal_fee = scale.0 * to_resize.value as f32 + cs.selected_value() as f32
                 - target.value() as f32;

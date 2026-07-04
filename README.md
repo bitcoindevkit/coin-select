@@ -57,10 +57,10 @@ let candidates = vec![
 let mut coin_selector = CoinSelector::new(&candidates);
 coin_selector.select(0);
 
-assert!(!coin_selector.is_target_met(target), "we didn't select enough");
+assert!(!coin_selector.is_funded(target), "we didn't select enough");
 println!("we didn't select enough yet we're missing: {}", coin_selector.missing(target));
 coin_selector.select(1);
-assert!(coin_selector.is_target_met(target), "we should have enough now");
+assert!(coin_selector.is_funded(target), "we should have enough now");
 
 // Now we need to know if we need a change output to drain the excess if we overshot too much
 //

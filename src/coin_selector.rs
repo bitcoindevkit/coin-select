@@ -112,7 +112,7 @@ impl<'a> CoinSelector<'a> {
     }
 
     /// Whether the candidates can cover this `target`'s **value** (net of input fees) — i.e. whether
-    /// enough value is reachable for [`is_target_met`] to hold. Respects [`ban`]ned candidates.
+    /// enough value is reachable for [`is_funded`] to hold. Respects [`ban`]ned candidates.
     ///
     /// Selecting *all* effective inputs maximizes the value available, so if that can't meet the
     /// target value, nothing can. Monotone, hence exact.
@@ -122,12 +122,12 @@ impl<'a> CoinSelector<'a> {
     /// which enforce the cap) to actually build a selection.
     ///
     /// [`ban`]: Self::ban
-    /// [`is_target_met`]: Self::is_target_met
+    /// [`is_funded`]: Self::is_funded
     /// [`select_until_target_met`]: Self::select_until_target_met
-    pub fn is_selection_possible(&self, target: Target) -> bool {
+    pub fn is_fundable(&self, target: Target) -> bool {
         let mut test = self.clone();
         test.select_all_effective(target.fee.rate);
-        test.is_target_met(target)
+        test.is_funded(target)
     }
 
     /// Returns true if no candidates have been selected.
@@ -439,7 +439,7 @@ impl<'a> CoinSelector<'a> {
     ///
     /// Always `true` when `max_weight` is `None`. Note this is the *anti-monotone* half of
     /// feasibility (adding inputs adds weight), so it is kept separate from the monotone
-    /// value-only [`is_target_met`](Self::is_target_met).
+    /// value-only [`is_funded`](Self::is_funded).
     pub fn is_within_max_weight(&self, target: Target, drain: Drain) -> bool {
         match target.max_weight {
             Some(max_weight) => self.weight(target.outputs, drain.weights) <= max_weight,
@@ -452,21 +452,21 @@ impl<'a> CoinSelector<'a> {
     ///
     /// This is **monotone**: selecting more never un-meets it. It deliberately does *not* include
     /// the weight cap — see [`is_within_max_weight`](Self::is_within_max_weight).
-    pub fn is_target_met_with_drain(&self, target: Target, drain: Drain) -> bool {
+    pub fn is_funded_with_drain(&self, target: Target, drain: Drain) -> bool {
         self.excess(target, drain) >= 0
     }
 
     /// Whether the selection covers the target **value** (net of input fees), i.e. [`excess`] is
     /// non-negative. **Monotone** (selecting more never un-meets it), and it deliberately does
     /// *not* check [`Target::max_weight`] — that is the separate, anti-monotone
-    /// [`is_within_max_weight`]. See [`is_target_met_with_drain`] for the version that
+    /// [`is_within_max_weight`]. See [`is_funded_with_drain`] for the version that
     /// accounts for a specific `drain`.
     ///
     /// [`excess`]: Self::excess
     /// [`is_within_max_weight`]: Self::is_within_max_weight
-    /// [`is_target_met_with_drain`]: Self::is_target_met_with_drain
-    pub fn is_target_met(&self, target: Target) -> bool {
-        self.is_target_met_with_drain(target, Drain::NONE)
+    /// [`is_funded_with_drain`]: Self::is_funded_with_drain
+    pub fn is_funded(&self, target: Target) -> bool {
+        self.is_funded_with_drain(target, Drain::NONE)
     }
 
     /// Select all unselected candidates
@@ -492,8 +492,8 @@ impl<'a> CoinSelector<'a> {
         );
         if excess > change_policy.min_value as i64 {
             debug_assert_eq!(
-                self.is_target_met(target),
-                self.is_target_met_with_drain(
+                self.is_funded(target),
+                self.is_funded_with_drain(
                     target,
                     Drain {
                         weights: change_policy.drain_weights,
@@ -512,12 +512,12 @@ impl<'a> CoinSelector<'a> {
     /// `change_policy`. If it should not, then it will return [`Drain::NONE`]. The value of the
     /// `Drain` will be the same as [`drain_value`].
     ///
-    /// If [`is_target_met`] returns true for this selection then [`is_target_met_with_drain`] will
+    /// If [`is_funded`] returns true for this selection then [`is_funded_with_drain`] will
     /// also be true if you pass in the drain returned from this method.
     ///
     /// [`drain_value`]: Self::drain_value
-    /// [`is_target_met_with_drain`]: Self::is_target_met_with_drain
-    /// [`is_target_met`]: Self::is_target_met
+    /// [`is_funded_with_drain`]: Self::is_funded_with_drain
+    /// [`is_funded`]: Self::is_funded
     #[must_use]
     pub fn drain(&self, target: Target, change_policy: ChangePolicy) -> Drain {
         match self.drain_value(target, change_policy) {
@@ -554,7 +554,7 @@ impl<'a> CoinSelector<'a> {
     ///   [`Target::max_weight`]. Note this only reflects *this* in-order greedy selection; a
     ///   different selection might still fit the cap (use branch and bound to search for one).
     pub fn select_until_target_met(&mut self, target: Target) -> Result<(), SelectError> {
-        self.select_until(|cs| cs.is_target_met(target))
+        self.select_until(|cs| cs.is_funded(target))
             .ok_or_else(|| {
                 SelectError::InsufficientFunds(InsufficientFunds {
                     missing: self.excess(target, Drain::NONE).unsigned_abs(),

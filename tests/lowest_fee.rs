@@ -72,7 +72,7 @@ proptest! {
         drain_dust in 100..=1000_u64,       // drain dust (sats)
         n_drain_outputs in 1usize..150,     // the number of drain outputs
         // No `max_weight` here: `n` is too large for the exhaustive oracle, and this test's
-        // impossibility check relies on the (value-only) `is_selection_possible`, so a weight cap
+        // impossibility check relies on the (value-only) `is_fundable`, so a weight cap
         // (which BnB could fail on while value is reachable) would break it. Cap handling is
         // covered by `bnb_respects_max_weight` and `can_eventually_find_best_solution`.
     ) {
@@ -94,7 +94,7 @@ proptest! {
         let mut cs = CoinSelector::new(&candidates);
 
         let metric = params.lowest_fee_metric();
-        let is_impossible = !cs.is_selection_possible(params.target());
+        let is_impossible = !cs.is_fundable(params.target());
         match common::bnb_search(&mut cs, params.target(), metric, params.n_candidates * 10) {
             Ok((score, rounds)) => {
                 // the +1 is because the iterator will always try selecting nothing as a solution so we have
