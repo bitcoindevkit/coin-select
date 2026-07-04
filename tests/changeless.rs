@@ -65,7 +65,8 @@ proptest! {
                 rate: feerate,
                 replace,
                 ..TargetFee::ZERO
-            }
+            },
+            max_weight: None,
         };
 
         let make_metric = || {

@@ -47,6 +47,7 @@ fn make_bnb_inputs(candidates: &[Candidate]) -> (Target, FeeRate) {
     let target = Target {
         fee: TargetFee::from_feerate(target_fr),
         outputs: TargetOutputs::fund_outputs([(TXOUT_BASE_WEIGHT + TR_SPK_WEIGHT, total / 2)]),
+        max_weight: None,
     };
     (target, long_term_fr)
 }
