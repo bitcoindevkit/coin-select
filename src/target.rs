@@ -7,6 +7,11 @@ pub struct Target {
     pub fee: TargetFee,
     /// The aggregate properties of outputs you're trying to fund
     pub outputs: TargetOutputs,
+    /// Maximum allowed weight of the resulting transaction (WU). `None` = unconstrained.
+    ///
+    /// This is a feasibility constraint on the answer (the sibling of the value target: a lower
+    /// bound on value, this an upper bound on weight). Relevant e.g. for TRUC/BIP-431 packages.
+    pub max_weight: Option<u64>,
 }
 
 impl Target {

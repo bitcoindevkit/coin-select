@@ -24,7 +24,9 @@ let outputs = vec![TxOut {
 
 let target = Target {
     outputs: TargetOutputs::fund_outputs(outputs.iter().map(|output| (output.weight().to_wu(), output.value.to_sat()))),
-    fee: TargetFee::from_feerate(FeeRate::from_sat_per_vb(42.0))
+    fee: TargetFee::from_feerate(FeeRate::from_sat_per_vb(42.0)),
+    // An optional cap on the resulting transaction weight (e.g. for TRUC). `None` = unconstrained.
+    max_weight: None,
 };
 
 let candidates = vec![
@@ -130,6 +132,7 @@ let mut coin_selector = CoinSelector::new(&candidates);
 let target = Target {
     fee: TargetFee::from_feerate(FeeRate::from_sat_per_vb(15.0)),
     outputs: TargetOutputs::fund_outputs(outputs.iter().map(|output| (output.weight().to_wu(), output.value.to_sat()))),
+    max_weight: None,
 };
 
 // The feerate used to work out whether a change output would be dust (and so shouldn't be added).

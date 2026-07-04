@@ -111,13 +111,19 @@ impl<'a> CoinSelector<'a> {
         self.selected.contains(index)
     }
 
-    /// Is meeting this `target` possible with the current selection with this `drain` (i.e. change output).
-    /// Note this will respect [`ban`]ned candidates.
+    /// Whether the candidates can cover this `target`'s **value** (net of input fees) — i.e. whether
+    /// enough value is reachable for [`is_target_met`] to hold. Respects [`ban`]ned candidates.
     ///
-    /// This simply selects all effective inputs at the target's feerate and checks whether we have
-    /// enough value.
+    /// Selecting *all* effective inputs maximizes the value available, so if that can't meet the
+    /// target value, nothing can. Monotone, hence exact.
+    ///
+    /// NOTE: this does **not** account for [`Target::max_weight`] — a `true` result can still be
+    /// infeasible under the weight cap. Use [`select_until_target_met`] or branch and bound (both of
+    /// which enforce the cap) to actually build a selection.
     ///
     /// [`ban`]: Self::ban
+    /// [`is_target_met`]: Self::is_target_met
+    /// [`select_until_target_met`]: Self::select_until_target_met
     pub fn is_selection_possible(&self, target: Target) -> bool {
         let mut test = self.clone();
         test.select_all_effective(target.fee.rate);
@@ -429,18 +435,36 @@ impl<'a> CoinSelector<'a> {
         self.unselected_indices().next().is_none()
     }
 
-    /// Whether the constraints of `Target` have been met if we include a specific `drain` ouput.
+    /// Whether the tx implied by the current selection and `drain` is within [`Target::max_weight`].
     ///
-    /// Note if [`is_target_met`] is true and the `drain` is produced from the [`drain`] method then
-    /// this method will also always be true.
+    /// Always `true` when `max_weight` is `None`. Note this is the *anti-monotone* half of
+    /// feasibility (adding inputs adds weight), so it is kept separate from the monotone
+    /// value-only [`is_target_met`](Self::is_target_met).
+    pub fn is_within_max_weight(&self, target: Target, drain: Drain) -> bool {
+        match target.max_weight {
+            Some(max_weight) => self.weight(target.outputs, drain.weights) <= max_weight,
+            None => true,
+        }
+    }
+
+    /// Whether the selection covers the target value (i.e. [`excess`](Self::excess) is
+    /// non-negative), ignoring [`Target::max_weight`].
     ///
-    /// [`is_target_met`]: Self::is_target_met
-    /// [`drain`]: Self::drain
+    /// This is **monotone**: selecting more never un-meets it. It deliberately does *not* include
+    /// the weight cap — see [`is_within_max_weight`](Self::is_within_max_weight).
     pub fn is_target_met_with_drain(&self, target: Target, drain: Drain) -> bool {
         self.excess(target, drain) >= 0
     }
 
-    /// Whether the constraints of `Target` have been met.
+    /// Whether the selection covers the target **value** (net of input fees), i.e. [`excess`] is
+    /// non-negative. **Monotone** (selecting more never un-meets it), and it deliberately does
+    /// *not* check [`Target::max_weight`] — that is the separate, anti-monotone
+    /// [`is_within_max_weight`]. See [`is_target_met_with_drain`] for the version that
+    /// accounts for a specific `drain`.
+    ///
+    /// [`excess`]: Self::excess
+    /// [`is_within_max_weight`]: Self::is_within_max_weight
+    /// [`is_target_met_with_drain`]: Self::is_target_met_with_drain
     pub fn is_target_met(&self, target: Target) -> bool {
         self.is_target_met_with_drain(target, Drain::NONE)
     }
@@ -521,14 +545,25 @@ impl<'a> CoinSelector<'a> {
         }
     }
 
-    /// Select candidates until `target` has been met assuming the `drain` output is attached.
+    /// Select candidates until `target` has been met.
     ///
-    /// Returns an error if the target was unable to be met.
-    pub fn select_until_target_met(&mut self, target: Target) -> Result<(), InsufficientFunds> {
+    /// # Errors
+    ///
+    /// - [`SelectError::InsufficientFunds`] if the candidates can't cover the target value.
+    /// - [`SelectError::MaxWeightExceeded`] if the value is met but the resulting selection exceeds
+    ///   [`Target::max_weight`]. Note this only reflects *this* in-order greedy selection; a
+    ///   different selection might still fit the cap (use branch and bound to search for one).
+    pub fn select_until_target_met(&mut self, target: Target) -> Result<(), SelectError> {
         self.select_until(|cs| cs.is_target_met(target))
-            .ok_or_else(|| InsufficientFunds {
-                missing: self.excess(target, Drain::NONE).unsigned_abs(),
-            })
+            .ok_or_else(|| {
+                SelectError::InsufficientFunds(InsufficientFunds {
+                    missing: self.excess(target, Drain::NONE).unsigned_abs(),
+                })
+            })?;
+        if !self.is_within_max_weight(target, Drain::NONE) {
+            return Err(SelectError::MaxWeightExceeded);
+        }
+        Ok(())
     }
 
     /// Select candidates until some predicate has been satisfied.
@@ -662,6 +697,38 @@ impl core::fmt::Display for InsufficientFunds {
 
 #[cfg(feature = "std")]
 impl std::error::Error for InsufficientFunds {}
+
+/// Error returned by [`CoinSelector::select_until_target_met`].
+#[derive(Clone, Debug, Copy, PartialEq, Eq)]
+pub enum SelectError {
+    /// The candidates can't cover the target value.
+    InsufficientFunds(InsufficientFunds),
+    /// The value target is met, but the resulting selection exceeds [`Target::max_weight`].
+    MaxWeightExceeded,
+}
+
+impl From<InsufficientFunds> for SelectError {
+    fn from(e: InsufficientFunds) -> Self {
+        SelectError::InsufficientFunds(e)
+    }
+}
+
+impl core::fmt::Display for SelectError {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        match self {
+            SelectError::InsufficientFunds(e) => write!(f, "{}", e),
+            SelectError::MaxWeightExceeded => {
+                write!(
+                    f,
+                    "Selection meets the target value but exceeds `max_weight`."
+                )
+            }
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for SelectError {}
 
 /// Error type for when a solution cannot be found by branch-and-bound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
