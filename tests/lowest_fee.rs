@@ -3,8 +3,8 @@
 mod common;
 use bdk_coin_select::metrics::{Changeless, LowestFee};
 use bdk_coin_select::{
-    BnbMetric, Candidate, ChangePolicy, CoinSelector, Drain, DrainWeights, FeeRate, Replace,
-    Target, TargetFee, TargetOutputs, TX_FIXED_FIELD_WEIGHT,
+    BnbMetric, Candidate, ChangePolicy, CoinSelector, Drain, DrainWeights, FeeRate, NoBnbSolution,
+    Replace, Target, TargetFee, TargetOutputs, TX_FIXED_FIELD_WEIGHT,
 };
 use proptest::prelude::*;
 
@@ -346,4 +346,91 @@ fn zero_fee_tx() {
     };
     let (_score, _rounds) =
         common::bnb_search(&mut cs, target, metric, 1000).expect("must find solution");
+}
+
+// --- `run_bnb` failure classification (`NoBnbSolution` variants) ---
+
+fn err_candidate(value: u64) -> Candidate {
+    Candidate {
+        value,
+        weight: 272, // ~1 P2WPKH input
+        input_count: 1,
+        is_segwit: true,
+    }
+}
+
+fn err_metric() -> LowestFee {
+    LowestFee {
+        long_term_feerate: FeeRate::from_sat_per_vb(1.0),
+        dust_relay_feerate: FeeRate::from_sat_per_vb(1.0),
+        drain_weights: DrainWeights::TR_KEYSPEND,
+    }
+}
+
+fn err_outputs(value_sum: u64) -> TargetOutputs {
+    TargetOutputs {
+        value_sum,
+        weight_sum: 100,
+        n_outputs: 1,
+    }
+}
+
+#[test]
+fn run_bnb_reports_insufficient_funds() {
+    // Two 100k inputs can't cover a 10M target: the value is simply unreachable.
+    let candidates = [err_candidate(100_000), err_candidate(100_000)];
+    let mut cs = CoinSelector::new(&candidates);
+    let target = Target {
+        outputs: err_outputs(10_000_000),
+        fee: TargetFee::ZERO,
+        max_weight: None,
+    };
+    assert_eq!(
+        cs.run_bnb(target, err_metric(), 100_000).unwrap_err(),
+        NoBnbSolution::InsufficientFunds,
+    );
+}
+
+#[test]
+fn run_bnb_reports_max_weight_exceeded() {
+    // The candidates *can* cover the value, but a 1 WU cap fits nothing, so the search exhausts
+    // without ever finding a within-cap selection.
+    let candidates = [
+        err_candidate(100_000),
+        err_candidate(100_000),
+        err_candidate(100_000),
+    ];
+    let mut cs = CoinSelector::new(&candidates);
+    let target = Target {
+        outputs: err_outputs(250_000),
+        fee: TargetFee::ZERO,
+        max_weight: Some(1),
+    };
+    assert_eq!(
+        cs.run_bnb(target, err_metric(), 100_000).unwrap_err(),
+        NoBnbSolution::MaxWeightExceeded,
+    );
+}
+
+#[test]
+fn run_bnb_reports_round_limit() {
+    // A solvable target, but zero rounds: we can't conclude infeasibility, only that we gave up.
+    let candidates = [
+        err_candidate(100_000),
+        err_candidate(100_000),
+        err_candidate(100_000),
+    ];
+    let mut cs = CoinSelector::new(&candidates);
+    let target = Target {
+        outputs: err_outputs(250_000),
+        fee: TargetFee::ZERO,
+        max_weight: None,
+    };
+    assert_eq!(
+        cs.run_bnb(target, err_metric(), 0).unwrap_err(),
+        NoBnbSolution::RoundLimit {
+            max_rounds: 0,
+            rounds: 0,
+        },
+    );
 }
