@@ -1,6 +1,7 @@
 mod common;
 use bdk_coin_select::{
-    float::Ordf32, BnbMetric, Candidate, CoinSelector, Drain, Target, TargetFee, TargetOutputs,
+    float::Ordf32, BnbMetric, Candidate, CoinSelector, Drain, SelectionView, Target, TargetFee,
+    TargetOutputs,
 };
 #[macro_use]
 extern crate alloc;
@@ -32,24 +33,24 @@ struct MinExcessThenWeight;
 const EXCESS_RATIO: f32 = 1_000_000_f32;
 
 impl BnbMetric for MinExcessThenWeight {
-    fn score(&mut self, cs: &CoinSelector<'_>, target: Target) -> Option<Ordf32> {
-        let excess = cs.excess(target, Drain::NONE);
+    fn score(&mut self, view: &SelectionView<'_>, target: Target) -> Option<Ordf32> {
+        let excess = view.excess(target, Drain::NONE);
         if excess < 0 {
             None
         } else {
             Some(Ordf32(
-                excess as f32 * EXCESS_RATIO + cs.input_weight() as f32,
+                excess as f32 * EXCESS_RATIO + view.input_weight() as f32,
             ))
         }
     }
 
-    fn bound(&mut self, cs: &CoinSelector<'_>, target: Target) -> Option<Ordf32> {
-        let mut cs = cs.clone();
+    fn bound(&mut self, view: &SelectionView<'_>, target: Target) -> Option<Ordf32> {
+        let mut cs = view.selector().clone();
         cs.select_until_target_met(target).ok()?;
-        Some(Ordf32(cs.input_weight() as f32))
+        Some(Ordf32(cs.compute_view().input_weight() as f32))
     }
 
-    fn drain(&mut self, _cs: &CoinSelector<'_>, _target: Target) -> Drain {
+    fn drain(&mut self, _view: &SelectionView<'_>, _target: Target) -> Drain {
         Drain::NONE
     }
 }
@@ -71,7 +72,7 @@ fn bnb_finds_an_exact_solution_in_n_iter() {
     let solution_weight = {
         let mut cs = CoinSelector::new(&solution);
         cs.select_all();
-        cs.input_weight()
+        cs.compute_view().input_weight()
     };
 
     let target_value = solution.iter().map(|c| c.value).sum();
@@ -104,8 +105,14 @@ fn bnb_finds_an_exact_solution_in_n_iter() {
         .expect("it found a solution");
 
     assert_eq!(rounds, 3194);
-    assert_eq!(best.input_weight(), solution_weight);
-    assert_eq!(best.selected_value(), target_value, "score={:?}", score);
+    let best_view = best.compute_view();
+    assert_eq!(best_view.input_weight(), solution_weight);
+    assert_eq!(
+        best_view.selected_value(),
+        target_value,
+        "score={:?}",
+        score
+    );
 }
 
 #[test]
@@ -139,8 +146,54 @@ fn bnb_finds_solution_if_possible_in_n_iter() {
         .expect("found a solution");
 
     assert_eq!(rounds, 164);
-    let excess = sol.excess(target, Drain::NONE);
+    let excess = sol.compute_view().excess(target, Drain::NONE);
     assert_eq!(excess, 0);
+}
+
+#[test]
+/// The exclusion branch's same-(value, weight) dedup run must skip already-decided candidates
+/// instead of banning them (a pre-selected candidate must never end up banned) or letting them
+/// end the run early.
+///
+/// Regression test: candidate 1 is pre-selected by the caller and shares (value, weight) with
+/// candidate 0. The optimal solution requires excluding candidate 0, and the dedup run following
+/// that exclusion used to also ban the pre-selected candidate 1, contaminating the selector that
+/// `run_bnb` hands back.
+fn bnb_exclusion_dedup_skips_decided_candidates() {
+    let candidates = vec![
+        Candidate::new(500, 100, false), // same (value, weight) as the pre-selected candidate
+        Candidate::new(500, 100, false), // pre-selected
+        Candidate::new(400, 100, false),
+    ];
+
+    let mut cs = CoinSelector::new(&candidates);
+    cs.select(1);
+
+    let target = Target {
+        outputs: TargetOutputs {
+            value_sum: 900,
+            weight_sum: 0,
+            n_outputs: 1,
+        },
+        fee: TargetFee::ZERO,
+        max_weight: None,
+    };
+
+    let _ = cs
+        .run_bnb(target, MinExcessThenWeight, 1_000)
+        .expect("must find solution");
+
+    // Optimal selection is {1, 2}: candidate 1 is mandatory and adding candidate 2 hits the
+    // target exactly, while any selection containing candidate 0 overshoots.
+    assert_eq!(cs.selected_indices().iter().collect::<Vec<_>>(), vec![1, 2]);
+    // The returned selector must not have any candidate simultaneously selected and banned.
+    for (idx, _) in cs.selected() {
+        assert!(
+            !cs.banned().contains(idx),
+            "candidate {} is both selected and banned",
+            idx
+        );
+    }
 }
 
 proptest! {
@@ -161,8 +214,8 @@ proptest! {
         let solutions = cs.bnb_solutions(target, MinExcessThenWeight);
 
         match solutions.enumerate().filter_map(|(i, sol)| Some((i, sol?))).last() {
-            Some((_i, (sol, _score))) => assert!(sol.selected_value() >= target_value),
-            _ => prop_assert!(!cs.is_fundable(target)),
+            Some((_i, (sol, _score))) => assert!(sol.compute_view().selected_value() >= target_value),
+            _ => prop_assert!(!cs.compute_view().is_fundable(target)),
         }
     }
 
@@ -180,7 +233,7 @@ proptest! {
         let solution_weight = {
             let mut cs = CoinSelector::new(&solution);
             cs.select_all();
-            cs.input_weight()
+            cs.compute_view().input_weight()
         };
 
         let target_value = solution.iter().map(|c| c.value).sum();
@@ -213,7 +266,8 @@ proptest! {
             .last()
             .expect("it found a solution");
 
-        prop_assert!(best.input_weight() <= solution_weight);
-        prop_assert_eq!(best.selected_value(), target.value());
+        let best_view = best.compute_view();
+        prop_assert!(best_view.input_weight() <= solution_weight);
+        prop_assert_eq!(best_view.selected_value(), target.value());
     }
 }

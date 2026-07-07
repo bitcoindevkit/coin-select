@@ -94,7 +94,7 @@ proptest! {
         let mut cs = CoinSelector::new(&candidates);
 
         let metric = params.lowest_fee_metric();
-        let is_impossible = !cs.is_fundable(params.target());
+        let is_impossible = !cs.compute_view().is_fundable(params.target());
         match common::bnb_search(&mut cs, params.target(), metric, params.n_candidates * 10) {
             Ok((score, rounds)) => {
                 // the +1 is because the iterator will always try selecting nothing as a solution so we have
@@ -280,7 +280,7 @@ fn does_not_create_change_below_spend_cost() {
     };
     assert_eq!(cs.selected_indices(), expected.selected_indices());
     assert!(
-        metric.drain(&cs, target).is_none(),
+        metric.drain(&cs.compute_view(), target).is_none(),
         "optimal selection must be changeless"
     );
 
@@ -293,7 +293,7 @@ fn does_not_create_change_below_spend_cost() {
     assert!(
         score
             <= metric
-                .score(&with_extra_input, target)
+                .score(&with_extra_input.compute_view(), target)
                 .expect("target is met")
     );
 }
