@@ -161,17 +161,19 @@ impl BnbMetric for LowestFee {
 
                 let best_score_with_change =
                     Ordf32(current_score.0 - cost_of_no_change as f32 + cost_of_adding_change);
-                // max_weight-aware: recovering that value requires a change output (and more
-                // inputs to clear the dust threshold), which only makes the tx heavier. If a change
-                // output can't fit the cap now it never will down this branch, so don't credit the
-                // improvement — keep `current_score` (a tighter, still-admissible bound).
-                let change_output = Drain {
-                    weights: self.drain_weights,
-                    value: 0,
+                // max_weight-aware: realizing that improvement requires a change output AND at
+                // least one more input to lift the excess over the dust/worthwhile threshold, both
+                // of which only make the tx heavier. If there's no room for both under the cap the
+                // improvement is unreachable down this branch, so don't credit it — keep
+                // `current_score` (a tighter, still-admissible bound).
+                let change_is_reachable = match target.max_weight {
+                    None => true,
+                    Some(max_weight) => cs.min_input_weight().map_or(false, |min_input_weight| {
+                        cs.weight(target.outputs, self.drain_weights) + min_input_weight
+                            <= max_weight
+                    }),
                 };
-                if best_score_with_change < current_score
-                    && cs.is_within_max_weight(target, change_output)
-                {
+                if change_is_reachable && best_score_with_change < current_score {
                     return Some(best_score_with_change);
                 }
             }

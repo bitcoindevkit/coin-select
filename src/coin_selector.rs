@@ -413,6 +413,17 @@ impl<'a> CoinSelector<'a> {
             .map(move |i| (i, self.candidates[i]))
     }
 
+    /// The weight of the lightest unselected (addable) candidate, or `None` when nothing is left to
+    /// add.
+    ///
+    /// This is a lower bound on the extra input weight any descendant selection must take on to add
+    /// more value, which weight-aware branch-and-bound bounds use to reason about `max_weight`.
+    pub fn min_input_weight(&self) -> Option<u64> {
+        self.unselected()
+            .map(|(_, candidate)| candidate.weight)
+            .min()
+    }
+
     /// The indices of the selelcted candidates.
     pub fn selected_indices(&self) -> &Bitset {
         &self.selected
