@@ -25,6 +25,13 @@ pub fn maybe_replace(
     proptest::option::of(replace(fee_strategy))
 }
 
+/// Strategy for an optional [`Target::max_weight`] cap (`None` = unconstrained).
+pub fn maybe_max_weight(
+    weight_strategy: impl Strategy<Value = u64>,
+) -> impl Strategy<Value = Option<u64>> {
+    proptest::option::of(weight_strategy)
+}
+
 /// Used for constructing a proptest that compares an exhaustive search result with a bnb result
 /// with the given metric.
 ///
@@ -183,7 +190,7 @@ where
                         cs,
                         parent_has_change,
                         lb_score,
-                        cs.is_target_met(target),
+                        cs.is_funded(target),
                         descendant_cs,
                         descendant_has_change,
                         descendant_score,
@@ -208,6 +215,7 @@ pub struct StrategyParams {
     pub drain_spend_weight: u32,
     pub drain_dust: u64,
     pub n_drain_outputs: usize,
+    pub max_weight: Option<u64>,
 }
 
 impl StrategyParams {
@@ -223,6 +231,7 @@ impl StrategyParams {
                 weight_sum: self.target_weight as u64,
                 n_outputs: self.n_target_outputs,
             },
+            max_weight: self.max_weight,
         }
     }
 
@@ -293,7 +302,7 @@ pub struct ExhaustiveIter<'a> {
 }
 
 impl<'a> ExhaustiveIter<'a> {
-    fn new(cs: &CoinSelector<'a>) -> Option<Self> {
+    pub fn new(cs: &CoinSelector<'a>) -> Option<Self> {
         let mut iter = Self { stack: Vec::new() };
         iter.push_branches(cs);
         Some(iter)
@@ -370,6 +379,24 @@ where
     }
 
     best.map(|(_, score)| (score, rounds))
+}
+
+/// Exact feasibility oracle: does *any* subset of the currently-unbanned candidates (added to the
+/// current selection) meet `target`, i.e. cover the value **and** stay within `max_weight`?
+///
+/// Enumerates every subset via [`ExhaustiveIter`] and reuses the real
+/// [`CoinSelector::is_funded`] + [`CoinSelector::is_within_max_weight`], so it inherits the
+/// exact weight model and is independent of the BnB weight prune it audits. Exponential — small `n`
+/// only.
+pub fn exact_selection_possible(cs: &CoinSelector, target: Target) -> bool {
+    let feasible = |s: &CoinSelector| {
+        s.is_funded(target) && s.is_within_max_weight(target, DrainWeights::NONE)
+    };
+    // the current selection itself (no additions) is a valid subset and isn't yielded by the iter
+    feasible(cs)
+        || ExhaustiveIter::new(cs)
+            .map(|mut iter| iter.any(|(subset, _)| feasible(&subset)))
+            .unwrap_or(false)
 }
 
 pub fn bnb_search<M>(
@@ -451,6 +478,16 @@ pub fn compare_against_benchmarks<M: BnbMetric + Clone>(
                     all_effective_selected.select_all_effective(target.fee.rate);
                     all_effective_selected
                 },
+                {
+                    // Lightest value-meeting greedy selection. Under a binding `max_weight` the
+                    // bulk benchmarks above are all over-cap (score `None`) and get filtered out;
+                    // this one is the relevant baseline that stays feasible when a light solution
+                    // exists, so the comparison below isn't vacuous.
+                    let mut greedy = cs.clone();
+                    greedy.sort_candidates_by_descending_value_pwu();
+                    let _ = greedy.select_until_target_met(target);
+                    greedy
+                },
             ];
 
             // add some random selections -- technically it's possible that one of these is better but it's very unlikely if our algorithm is working correctly.
@@ -458,13 +495,25 @@ pub fn compare_against_benchmarks<M: BnbMetric + Clone>(
                 (0..10).map(|_| randomly_satisfy_target(&cs, target, &mut rng, metric.clone())),
             );
 
+            // Only compare against benchmarks that are themselves *valid* solutions. A benchmark
+            // can meet the target value yet bust `max_weight` (e.g. `select_all` on a tight cap),
+            // in which case its score is `None` and it isn't a real solution to compare against.
             let cmp_benchmarks = cmp_benchmarks
                 .into_iter()
-                .filter(|cs| cs.is_target_met(target));
+                .filter_map(|cs| {
+                    let score = metric.clone().score(&cs, target)?;
+                    Some((cs, score))
+                })
+                .collect::<Vec<_>>();
             let sol_score = metric.score(&sol, target);
 
-            for (_bench_id, mut bench) in cmp_benchmarks.enumerate() {
-                let bench_score = metric.score(&bench, target);
+            for (_bench_id, (mut bench, bench_score)) in cmp_benchmarks.into_iter().enumerate() {
+                prop_assert!(
+                    sol_score.is_some(),
+                    "bnb must be able to find solution if benchmark can"
+                );
+                let sol_score = sol_score.expect("must be some");
+
                 if sol_score > bench_score {
                     dbg!(_bench_id);
                     println!("bnb solution: {}", sol);
@@ -475,7 +524,9 @@ pub fn compare_against_benchmarks<M: BnbMetric + Clone>(
             }
         }
         None => {
-            prop_assert!(!cs.is_selection_possible(target));
+            // Full feasibility (value *and* max_weight) is needed here; `is_fundable`
+            // only covers value, so use the exact exhaustive oracle to assert impossibility.
+            prop_assert!(!exact_selection_possible(&cs, target));
         }
     }
 
@@ -495,7 +546,7 @@ fn randomly_satisfy_target<'a, R: rand::Rng>(
     let mut last_score: Option<Ordf32> = None;
     while let Some(next) = cs.unselected_indices().choose(rng) {
         cs.select(next);
-        if cs.is_target_met(target) {
+        if cs.is_funded(target) {
             let curr_score = metric.score(&cs, target);
             if let Some(last_score) = last_score {
                 if curr_score.is_none() || curr_score.unwrap() > last_score {

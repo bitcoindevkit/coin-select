@@ -90,6 +90,7 @@ fn bnb_finds_an_exact_solution_in_n_iter() {
         },
         // we're trying to find an exact selection value so set fees to 0
         fee: TargetFee::ZERO,
+        max_weight: None,
     };
 
     let solutions = cs.bnb_solutions(target, MinExcessThenWeight);
@@ -124,6 +125,7 @@ fn bnb_finds_solution_if_possible_in_n_iter() {
             n_outputs: 1,
         },
         fee: TargetFee::default(),
+        max_weight: None,
     };
 
     let solutions = cs.bnb_solutions(target, MinExcessThenWeight);
@@ -143,6 +145,7 @@ fn bnb_finds_solution_if_possible_in_n_iter() {
 
 proptest! {
     #[test]
+    #[cfg(not(debug_assertions))] // too slow if compiling for debug
     fn bnb_always_finds_solution_if_possible(num_inputs in 1usize..18, target_value in 0u64..10_000) {
         let mut rng = TestRng::deterministic_rng(RngAlgorithm::ChaCha);
         let wv = test_wv(&mut rng);
@@ -152,13 +155,14 @@ proptest! {
         let target = Target {
             outputs: TargetOutputs { value_sum: target_value, weight_sum: 0, n_outputs: 1 },
             fee: TargetFee::ZERO,
+            max_weight: None,
         };
 
         let solutions = cs.bnb_solutions(target, MinExcessThenWeight);
 
         match solutions.enumerate().filter_map(|(i, sol)| Some((i, sol?))).last() {
             Some((_i, (sol, _score))) => assert!(sol.selected_value() >= target_value),
-            _ => prop_assert!(!cs.is_selection_possible(target)),
+            _ => prop_assert!(!cs.is_fundable(target)),
         }
     }
 
@@ -198,6 +202,7 @@ proptest! {
             outputs: TargetOutputs { value_sum: target_value, weight_sum: 0, n_outputs: 1 },
             // we're trying to find an exact selection value so set fees to 0
             fee: TargetFee::ZERO,
+            max_weight: None,
         };
 
         let solutions = cs.bnb_solutions(target, MinExcessThenWeight);

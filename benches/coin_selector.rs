@@ -8,6 +8,11 @@
 //!
 //! Run with `cargo bench`. Filter with `cargo bench -- <pattern>`.
 
+// Benchmarks are dev-only and are never built under the MSRV (the `build-msrv` CI job excludes
+// dev-dependencies), so lints about newer std APIs — e.g. `black_box`, stable since 1.66 — don't
+// apply here.
+#![allow(clippy::incompatible_msrv)]
+
 use bdk_coin_select::{
     metrics::LowestFee, Candidate, CoinSelector, DrainWeights, FeeRate, Target, TargetFee,
     TargetOutputs, TR_SPK_WEIGHT, TXIN_BASE_WEIGHT, TXOUT_BASE_WEIGHT,
@@ -42,6 +47,7 @@ fn make_bnb_inputs(candidates: &[Candidate]) -> (Target, FeeRate) {
     let target = Target {
         fee: TargetFee::from_feerate(target_fr),
         outputs: TargetOutputs::fund_outputs([(TXOUT_BASE_WEIGHT + TR_SPK_WEIGHT, total / 2)]),
+        max_weight: None,
     };
     (target, long_term_fr)
 }

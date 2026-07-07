@@ -27,8 +27,9 @@ proptest! {
         drain_spend_weight in 1..=2000_u32, // drain spend weight (wu)
         drain_dust in 100..=1000_u64,       // drain dust (sats)
         n_drain_outputs in 1usize..150,     // the number of drain outputs
+        max_weight in common::maybe_max_weight(500u64..4_000), // optional max tx weight cap (wu)
     ) {
-        let params = common::StrategyParams { n_candidates, target_value, n_target_outputs, target_weight, replace, feerate, feerate_lt_diff, drain_weight, drain_spend_weight, drain_dust, n_drain_outputs };
+        let params = common::StrategyParams { n_candidates, target_value, n_target_outputs, target_weight, replace, feerate, feerate_lt_diff, drain_weight, drain_spend_weight, drain_dust, n_drain_outputs , max_weight };
         let candidates = common::gen_candidates(params.n_candidates);
         let metric = params.lowest_fee_metric();
         common::can_eventually_find_best_solution(params, candidates, metric)?;
@@ -48,8 +49,9 @@ proptest! {
         drain_spend_weight in 1..=2000_u32, // drain spend weight (wu)
         drain_dust in 100..=1000_u64,       // drain dust (sats)
         n_drain_outputs in 1usize..150,     // the number of drain outputs
+        max_weight in common::maybe_max_weight(500u64..4_000), // optional max tx weight cap (wu)
     ) {
-        let params = common::StrategyParams { n_candidates, target_value, n_target_outputs, target_weight, replace, feerate, feerate_lt_diff, drain_weight, drain_spend_weight, drain_dust, n_drain_outputs };
+        let params = common::StrategyParams { n_candidates, target_value, n_target_outputs, target_weight, replace, feerate, feerate_lt_diff, drain_weight, drain_spend_weight, drain_dust, n_drain_outputs , max_weight };
         let candidates = common::gen_candidates(params.n_candidates);
         let metric = params.lowest_fee_metric();
         common::ensure_bound_is_not_too_tight(params, candidates, metric)?;
@@ -69,25 +71,30 @@ proptest! {
         drain_spend_weight in 1..=2000_u32, // drain spend weight (wu)
         drain_dust in 100..=1000_u64,       // drain dust (sats)
         n_drain_outputs in 1usize..150,     // the number of drain outputs
+        // No `max_weight` here: `n` is too large for the exhaustive oracle, and this test's
+        // impossibility check relies on the (value-only) `is_fundable`, so a weight cap
+        // (which BnB could fail on while value is reachable) would break it. Cap handling is
+        // covered by `bnb_respects_max_weight` and `can_eventually_find_best_solution`.
     ) {
         println!("== TEST ==");
 
-        let params = common::StrategyParams { n_candidates, target_value, n_target_outputs, target_weight, replace, feerate, feerate_lt_diff, drain_weight, drain_spend_weight, drain_dust, n_drain_outputs };
+        let params = common::StrategyParams { n_candidates, target_value, n_target_outputs, target_weight, replace, feerate, feerate_lt_diff, drain_weight, drain_spend_weight, drain_dust, n_drain_outputs, max_weight: None };
         println!("{:?}", params);
 
-        let candidates = core::iter::repeat(Candidate {
+        let candidates = vec![
+            Candidate {
                 value: 20_000,
                 weight: (32 + 4 + 4 + 1) * 4 + 64 + 32,
                 input_count: 1,
                 is_segwit: true,
-            })
-            .take(params.n_candidates)
-            .collect::<Vec<_>>();
+            };
+            params.n_candidates
+        ];
 
         let mut cs = CoinSelector::new(&candidates);
 
         let metric = params.lowest_fee_metric();
-        let is_impossible = !cs.is_selection_possible(params.target());
+        let is_impossible = !cs.is_fundable(params.target());
         match common::bnb_search(&mut cs, params.target(), metric, params.n_candidates * 10) {
             Ok((score, rounds)) => {
                 // the +1 is because the iterator will always try selecting nothing as a solution so we have
@@ -101,7 +108,9 @@ proptest! {
     #[test]
     #[cfg(not(debug_assertions))] // too slow if compiling for debug
     fn compare_against_benchmarks(
-        n_candidates in 0..50_usize,        // candidates (n)
+        // `n` is kept small: the no-solution branch asserts against `exact_selection_possible`,
+        // an exhaustive O(2^n) oracle (needed because it must be exact w.r.t. the weight cap).
+        n_candidates in 0..16_usize,        // candidates (n)
         target_value in 500..1_000_000_u64,   // target value (sats)
         n_target_outputs in 1usize..150,    // the number of outputs we're funding
         target_weight in 0..10_000_u32,         // the sum of the weight of the outputs (wu)
@@ -112,12 +121,56 @@ proptest! {
         drain_spend_weight in 1..=2000_u32, // drain spend weight (wu)
         drain_dust in 100..=1000_u64,       // drain dust (sats)
         n_drain_outputs in 1usize..150,     // the number of drain outputs
+        max_weight in common::maybe_max_weight(500u64..4_000), // optional max tx weight cap (wu)
     ) {
 
-        let params = common::StrategyParams { n_candidates, target_value, n_target_outputs, target_weight, replace, feerate, feerate_lt_diff, drain_weight, drain_spend_weight, drain_dust, n_drain_outputs };
+        let params = common::StrategyParams { n_candidates, target_value, n_target_outputs, target_weight, replace, feerate, feerate_lt_diff, drain_weight, drain_spend_weight, drain_dust, n_drain_outputs , max_weight };
         let candidates = common::gen_candidates(params.n_candidates);
         let metric = params.lowest_fee_metric();
         common::compare_against_benchmarks(params, candidates, metric)?;
+    }
+}
+
+proptest! {
+    // Cheap cases (small n), so run many more than the default to stress the max_weight prune.
+    #![proptest_config(ProptestConfig { cases: 512, ..Default::default() })]
+
+    /// Cross-check `max_weight` handling against an exact, exhaustive feasibility oracle.
+    ///
+    /// BnB with unlimited rounds is itself an exact feasibility detector (nothing is pruned before
+    /// the first incumbent; the only pre-incumbent prune is the weight hard-prune). So
+    /// `bnb_found == exact_possible` must hold — a mismatch means the prune dropped a feasible
+    /// subtree. `n` is kept small because the exact oracle is exponential.
+    #[test]
+    #[cfg(not(debug_assertions))] // too slow if compiling for debug
+    fn bnb_respects_max_weight(
+        n_candidates in 1..12_usize,
+        target_value in 500..500_000_u64,
+        n_target_outputs in 1usize..150,
+        target_weight in 0..10_000_u32,
+        replace in common::maybe_replace(0u64..10_000),
+        feerate in 1.0..100.0_f32,
+        feerate_lt_diff in -5.0..50.0_f32,
+        drain_weight in 100..=500_u32,
+        drain_spend_weight in 1..=2000_u32,
+        drain_dust in 100..=1000_u64,
+        n_drain_outputs in 1usize..150,
+        max_weight in common::maybe_max_weight(500u64..4_000), // TRUC-tight -> binds often, small DP
+    ) {
+        let params = common::StrategyParams { n_candidates, target_value, n_target_outputs, target_weight, replace, feerate, feerate_lt_diff, drain_weight, drain_spend_weight, drain_dust, n_drain_outputs, max_weight };
+        let candidates = common::gen_candidates(params.n_candidates);
+        let target = params.target();
+        let metric = params.lowest_fee_metric();
+
+        let exact_possible = common::exact_selection_possible(&CoinSelector::new(&candidates), target);
+
+        let mut cs = CoinSelector::new(&candidates);
+        let bnb_found = common::bnb_search(&mut cs, target, metric, usize::MAX).is_ok();
+        prop_assert_eq!(
+            bnb_found, exact_possible,
+            "bnb_found={} but exact_possible={} (weight prune may have dropped a feasible subtree)",
+            bnb_found, exact_possible
+        );
     }
 }
 
@@ -138,6 +191,7 @@ fn combined_changeless_metric() {
         drain_dust: 200,
         n_target_outputs: 1,
         n_drain_outputs: 1,
+        max_weight: None,
     };
 
     let candidates = common::gen_candidates(params.n_candidates);
@@ -177,6 +231,7 @@ fn does_not_create_change_below_spend_cost() {
             weight_sum: 200 - TX_FIXED_FIELD_WEIGHT - 1,
             n_outputs: 1,
         },
+        max_weight: None,
     };
 
     let candidates = vec![
@@ -259,6 +314,7 @@ fn zero_fee_tx() {
             weight_sum: 200 - TX_FIXED_FIELD_WEIGHT - 1,
             n_outputs: 1,
         },
+        max_weight: None,
     };
 
     let candidates = vec![

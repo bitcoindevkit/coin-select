@@ -53,7 +53,45 @@ impl LowestFee {
             return None;
         }
 
+        // ...and only if the change output would not push the tx over `max_weight`. If it would,
+        // we refuse the drain and the excess goes to fee instead (a slightly conservative choice:
+        // it can refuse change even when a no-change tx of this selection would fit).
+        if !cs.is_within_max_weight(target, self.drain_weights) {
+            return None;
+        }
+
         Some(excess_with_drain_weight.unsigned_abs())
+    }
+
+    /// The long-term-fee score together with the drain it assumes. `None` iff the value target
+    /// isn't met.
+    ///
+    /// This does **not** reject an over-cap *changeless* selection — only [`score`](BnbMetric::score)
+    /// does — though the drain it returns is never over-cap (`drain_value` refuses that). Used
+    /// inside [`bound`](BnbMetric::bound): deferring the changeless rejection only loosens the lower
+    /// bound and never makes it inadmissible, and `score` reuses the returned drain for its cap
+    /// check so the drain is decided once.
+    fn fee_score(&self, cs: &CoinSelector<'_>, target: Target) -> Option<(Ordf32, Drain)> {
+        if !cs.is_funded(target) {
+            return None;
+        }
+        let drain = self
+            .drain_value(cs, target)
+            .map_or(Drain::NONE, |value| Drain {
+                weights: self.drain_weights,
+                value,
+            });
+        let fee_for_the_tx = cs.fee(target.value(), drain.value);
+        assert!(
+            fee_for_the_tx >= 0,
+            "must not be called unless selection has met target: fee={}",
+            fee_for_the_tx
+        );
+        let fee_for_spending_drain = drain.weights.spend_fee(self.long_term_feerate);
+        Some((
+            Ordf32((fee_for_the_tx as u64 + fee_for_spending_drain) as f32),
+            drain,
+        ))
     }
 }
 
@@ -67,30 +105,27 @@ impl BnbMetric for LowestFee {
     }
 
     fn score(&mut self, cs: &CoinSelector<'_>, target: Target) -> Option<Ordf32> {
-        if !cs.is_target_met(target) {
+        let (score, drain) = self.fee_score(cs, target)?;
+        // A final selection must fit the weight cap. `drain_value` already refuses an over-cap
+        // change, but a changeless selection can still be too heavy on its own. Reuse the drain
+        // `fee_score` already decided rather than recomputing it here.
+        if !cs.is_within_max_weight(target, drain.weights) {
             return None;
         }
-
-        let long_term_fee = {
-            let drain = self.drain(cs, target);
-            let fee_for_the_tx = cs.fee(target.value(), drain.value);
-            assert!(
-                fee_for_the_tx >= 0,
-                "must not be called unless selection has met target: fee={}",
-                fee_for_the_tx
-            );
-            // `spend_fee` rounds up here. We could use floats but I felt it was just better to
-            // accept the extra 1 sat penality to having a change output
-            let fee_for_spending_drain = drain.weights.spend_fee(self.long_term_feerate);
-            fee_for_the_tx as u64 + fee_for_spending_drain
-        };
-
-        Some(Ordf32(long_term_fee as f32))
+        Some(score)
     }
 
     fn bound(&mut self, cs: &CoinSelector<'_>, target: Target) -> Option<Ordf32> {
-        if cs.is_target_met(target) {
-            let current_score = self.score(cs, target).unwrap();
+        // Weight hard-prune: input weight only grows as this branch is extended, so the lightest
+        // solution in the subtree is this selection with no drain. If even that busts `max_weight`,
+        // the whole subtree is infeasible -> prune. (Also keeps `fee_score(cs).unwrap()` below
+        // sound: a value-met but over-cap node would otherwise score `None`.)
+        if !cs.is_within_max_weight(target, DrainWeights::NONE) {
+            return None;
+        }
+
+        if cs.is_funded(target) {
+            let current_score = self.fee_score(cs, target).unwrap().0;
 
             // `current_score` is already a valid lower bound for a selection that has change: a
             // descendant can never lower the fee by removing an existing (worthwhile) change
@@ -125,7 +160,19 @@ impl BnbMetric for LowestFee {
 
                 let best_score_with_change =
                     Ordf32(current_score.0 - cost_of_no_change as f32 + cost_of_adding_change);
-                if best_score_with_change < current_score {
+                // max_weight-aware: realizing that improvement requires a change output AND at
+                // least one more input to lift the excess over the dust/worthwhile threshold, both
+                // of which only make the tx heavier. If there's no room for both under the cap the
+                // improvement is unreachable down this branch, so don't credit it — keep
+                // `current_score` (a tighter, still-admissible bound).
+                let change_is_reachable = match target.max_weight {
+                    None => true,
+                    Some(max_weight) => cs.min_input_weight().map_or(false, |min_input_weight| {
+                        cs.weight(target.outputs, self.drain_weights) + min_input_weight
+                            <= max_weight
+                    }),
+                };
+                if change_is_reachable && best_score_with_change < current_score {
                     return Some(best_score_with_change);
                 }
             }
@@ -136,17 +183,17 @@ impl BnbMetric for LowestFee {
             let (mut cs, resize_index, to_resize) = cs
                 .clone()
                 .select_iter()
-                .find(|(cs, _, _)| cs.is_target_met(target))?;
+                .find(|(cs, _, _)| cs.is_funded(target))?;
 
             // If this selection is already perfect, return its score directly.
             if cs.excess(target, Drain::NONE) == 0 {
-                return Some(self.score(&cs, target).unwrap());
+                return Some(self.fee_score(&cs, target).unwrap().0);
             };
             cs.deselect(resize_index);
 
             // We need to find the minimum fee we'd pay if we satisfy the feerate constraint. We do
             // this by imagining we had a perfect input that perfectly hit the target. The sats per
-            // weight unit of this perfect input is the one at `slurp_index` but we'll do a scaled
+            // weight unit of this perfect input is that of `to_resize` but we'll do a scaled
             // resize of it to fit perfectly.
             //
             // Here's the formaula:
@@ -207,7 +254,22 @@ impl BnbMetric for LowestFee {
                 }
             }
 
-            // `scale` could be 0 even if `is_target_met` is `false` due to the latter being based on
+            // max_weight-aware: reaching the feerate needs a perfect input weighing
+            // `scale * to_resize.weight`. `to_resize` is the best value-per-weight input available,
+            // so if the current weight plus even that (fractional) minimum already busts the cap,
+            // no within-cap selection down this branch reaches the target -> prune. This is the
+            // fractional relaxation, so it never prunes a branch with an (integer) within-cap
+            // solution.
+            if let Some(max_weight) = target.max_weight {
+                if cs.weight(target.outputs, DrainWeights::NONE) as f32
+                    + scale.0 * to_resize.weight as f32
+                    > max_weight as f32
+                {
+                    return None;
+                }
+            }
+
+            // `scale` could be 0 even if `is_funded` is `false` due to the latter being based on
             // rounded-up vbytes.
             let ideal_fee = scale.0 * to_resize.value as f32 + cs.selected_value() as f32
                 - target.value() as f32;

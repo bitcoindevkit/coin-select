@@ -24,7 +24,9 @@ let outputs = vec![TxOut {
 
 let target = Target {
     outputs: TargetOutputs::fund_outputs(outputs.iter().map(|output| (output.weight().to_wu(), output.value.to_sat()))),
-    fee: TargetFee::from_feerate(FeeRate::from_sat_per_vb(42.0))
+    fee: TargetFee::from_feerate(FeeRate::from_sat_per_vb(42.0)),
+    // An optional cap on the resulting transaction weight (e.g. for TRUC). `None` = unconstrained.
+    max_weight: None,
 };
 
 let candidates = vec![
@@ -55,10 +57,10 @@ let candidates = vec![
 let mut coin_selector = CoinSelector::new(&candidates);
 coin_selector.select(0);
 
-assert!(!coin_selector.is_target_met(target), "we didn't select enough");
+assert!(!coin_selector.is_funded(target), "we didn't select enough");
 println!("we didn't select enough yet we're missing: {}", coin_selector.missing(target));
 coin_selector.select(1);
-assert!(coin_selector.is_target_met(target), "we should have enough now");
+assert!(coin_selector.is_funded(target), "we should have enough now");
 
 // Now we need to know if we need a change output to drain the excess if we overshot too much
 //
@@ -130,6 +132,7 @@ let mut coin_selector = CoinSelector::new(&candidates);
 let target = Target {
     fee: TargetFee::from_feerate(FeeRate::from_sat_per_vb(15.0)),
     outputs: TargetOutputs::fund_outputs(outputs.iter().map(|output| (output.weight().to_wu(), output.value.to_sat()))),
+    max_weight: None,
 };
 
 // The feerate used to work out whether a change output would be dust (and so shouldn't be added).
