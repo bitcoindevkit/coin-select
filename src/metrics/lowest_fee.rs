@@ -56,22 +56,21 @@ impl LowestFee {
         // ...and only if the change output would not push the tx over `max_weight`. If it would,
         // we refuse the drain and the excess goes to fee instead (a slightly conservative choice:
         // it can refuse change even when a no-change tx of this selection would fit).
-        let drain = Drain {
-            weights: self.drain_weights,
-            value: excess_with_drain_weight.unsigned_abs(),
-        };
-        if !cs.is_within_max_weight(target, drain) {
+        if !cs.is_within_max_weight(target, self.drain_weights) {
             return None;
         }
 
         Some(excess_with_drain_weight.unsigned_abs())
     }
 
-    /// The long-term-fee score **ignoring** the `max_weight` cap, together with the drain it
-    /// assumes. `None` iff the value target isn't met. Used inside [`bound`](BnbMetric::bound),
-    /// where ignoring the (feasibility) cap only loosens the lower bound and never makes it
-    /// inadmissible; [`score`](BnbMetric::score) reuses the returned drain for its cap check so the
-    /// drain is only decided once.
+    /// The long-term-fee score together with the drain it assumes. `None` iff the value target
+    /// isn't met.
+    ///
+    /// This does **not** reject an over-cap *changeless* selection — only [`score`](BnbMetric::score)
+    /// does — though the drain it returns is never over-cap (`drain_value` refuses that). Used
+    /// inside [`bound`](BnbMetric::bound): deferring the changeless rejection only loosens the lower
+    /// bound and never makes it inadmissible, and `score` reuses the returned drain for its cap
+    /// check so the drain is decided once.
     fn fee_score(&self, cs: &CoinSelector<'_>, target: Target) -> Option<(Ordf32, Drain)> {
         if !cs.is_funded(target) {
             return None;
@@ -110,7 +109,7 @@ impl BnbMetric for LowestFee {
         // A final selection must fit the weight cap. `drain_value` already refuses an over-cap
         // change, but a changeless selection can still be too heavy on its own. Reuse the drain
         // `fee_score` already decided rather than recomputing it here.
-        if !cs.is_within_max_weight(target, drain) {
+        if !cs.is_within_max_weight(target, drain.weights) {
             return None;
         }
         Some(score)
@@ -121,7 +120,7 @@ impl BnbMetric for LowestFee {
         // solution in the subtree is this selection with no drain. If even that busts `max_weight`,
         // the whole subtree is infeasible -> prune. (Also keeps `fee_score(cs).unwrap()` below
         // sound: a value-met but over-cap node would otherwise score `None`.)
-        if !cs.is_within_max_weight(target, Drain::NONE) {
+        if !cs.is_within_max_weight(target, DrainWeights::NONE) {
             return None;
         }
 
@@ -194,7 +193,7 @@ impl BnbMetric for LowestFee {
 
             // We need to find the minimum fee we'd pay if we satisfy the feerate constraint. We do
             // this by imagining we had a perfect input that perfectly hit the target. The sats per
-            // weight unit of this perfect input is the one at `slurp_index` but we'll do a scaled
+            // weight unit of this perfect input is that of `to_resize` but we'll do a scaled
             // resize of it to fit perfectly.
             //
             // Here's the formaula:
@@ -257,13 +256,15 @@ impl BnbMetric for LowestFee {
 
             // max_weight-aware: reaching the feerate needs a perfect input weighing
             // `scale * to_resize.weight`. `to_resize` is the best value-per-weight input available,
-            // so if even that (fractionally) can't fit the remaining weight budget, no within-cap
-            // selection down this branch reaches the target -> prune. This is the fractional
-            // relaxation, so it never prunes a branch that has an (integer) within-cap solution.
+            // so if the current weight plus even that (fractional) minimum already busts the cap,
+            // no within-cap selection down this branch reaches the target -> prune. This is the
+            // fractional relaxation, so it never prunes a branch with an (integer) within-cap
+            // solution.
             if let Some(max_weight) = target.max_weight {
-                let budget =
-                    max_weight.saturating_sub(cs.weight(target.outputs, DrainWeights::NONE));
-                if scale.0 * to_resize.weight as f32 > budget as f32 {
+                if cs.weight(target.outputs, DrainWeights::NONE) as f32
+                    + scale.0 * to_resize.weight as f32
+                    > max_weight as f32
+                {
                     return None;
                 }
             }

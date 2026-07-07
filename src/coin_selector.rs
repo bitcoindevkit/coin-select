@@ -446,14 +446,15 @@ impl<'a> CoinSelector<'a> {
         self.unselected_indices().next().is_none()
     }
 
-    /// Whether the tx implied by the current selection and `drain` is within [`Target::max_weight`].
+    /// Whether the tx implied by the current selection plus a drain of `drain_weights` is within
+    /// [`Target::max_weight`]. Pass [`DrainWeights::NONE`] for a changeless tx.
     ///
     /// Always `true` when `max_weight` is `None`. Note this is the *anti-monotone* half of
     /// feasibility (adding inputs adds weight), so it is kept separate from the monotone
     /// value-only [`is_funded`](Self::is_funded).
-    pub fn is_within_max_weight(&self, target: Target, drain: Drain) -> bool {
+    pub fn is_within_max_weight(&self, target: Target, drain_weights: DrainWeights) -> bool {
         match target.max_weight {
-            Some(max_weight) => self.weight(target.outputs, drain.weights) <= max_weight,
+            Some(max_weight) => self.weight(target.outputs, drain_weights) <= max_weight,
             None => true,
         }
     }
@@ -571,7 +572,7 @@ impl<'a> CoinSelector<'a> {
                     missing: self.excess(target, Drain::NONE).unsigned_abs(),
                 })
             })?;
-        if !self.is_within_max_weight(target, Drain::NONE) {
+        if !self.is_within_max_weight(target, DrainWeights::NONE) {
             return Err(SelectError::MaxWeightExceeded);
         }
         Ok(())

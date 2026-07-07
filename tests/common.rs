@@ -389,8 +389,9 @@ where
 /// exact weight model and is independent of the BnB weight prune it audits. Exponential — small `n`
 /// only.
 pub fn exact_selection_possible(cs: &CoinSelector, target: Target) -> bool {
-    let feasible =
-        |s: &CoinSelector| s.is_funded(target) && s.is_within_max_weight(target, Drain::NONE);
+    let feasible = |s: &CoinSelector| {
+        s.is_funded(target) && s.is_within_max_weight(target, DrainWeights::NONE)
+    };
     // the current selection itself (no additions) is a valid subset and isn't yielded by the iter
     feasible(cs)
         || ExhaustiveIter::new(cs)
