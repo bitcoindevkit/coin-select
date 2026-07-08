@@ -7,3 +7,5 @@ mod lowest_fee;
 pub use lowest_fee::*;
 mod changeless;
 pub use changeless::*;
+mod changeless_waste;
+pub use changeless_waste::*;

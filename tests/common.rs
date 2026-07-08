@@ -216,6 +216,7 @@ pub struct StrategyParams {
     pub drain_dust: u64,
     pub n_drain_outputs: usize,
     pub max_weight: Option<u64>,
+    pub absolute: u64,
 }
 
 impl StrategyParams {
@@ -224,7 +225,7 @@ impl StrategyParams {
             fee: TargetFee {
                 rate: FeeRate::from_sat_per_vb(self.feerate),
                 replace: self.replace,
-                ..TargetFee::ZERO
+                absolute: self.absolute,
             },
             outputs: TargetOutputs {
                 value_sum: self.target_value,
