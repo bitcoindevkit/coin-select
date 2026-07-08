@@ -534,6 +534,81 @@ fn cap_refused_change_is_changeless_and_not_pruned() {
     assert_bound_admissible(metric, &sel, &s, target);
 }
 
+/// Under a cap that refuses change, a changeless descendant can keep ALL its excess-contributing
+/// candidates, so the `rate_diff < 0` knapsack (which assumes changeless descendants must shed
+/// them) must fall back to a bound that covers the full selection.
+#[test]
+fn bound_is_valid_when_cap_refuses_change_rate_diff_neg() {
+    // feerate 1 sat/vb (0.25 spwu), long-term 5 sat/vb -> rate_diff = -1 spwu.
+    // spend_cost = ceil(600 * 1.25) = 750 -> changeless edge = 750.
+    let rate = FeeRate::from_sat_per_vb(1.0);
+    let drain_weights = DrainWeights {
+        output_weight: 100,
+        spend_weight: 600,
+        n_outputs: 1,
+    };
+    let metric = ChangelessWaste {
+        long_term_feerate: FeeRate::from_sat_per_vb(5.0),
+        dust_relay_feerate: FeeRate::from_sat_per_vb(1.0),
+        drain_weights,
+    };
+
+    let candidates = vec![
+        // A: the selected branch.
+        Candidate {
+            value: 20_000,
+            weight: 400,
+            input_count: 1,
+            is_segwit: false,
+        },
+        // P: linear ev = 525 - 1500*0.25 = 150; heavy relative to its ev, so the knapsack
+        // removes a lot of weight through it.
+        Candidate {
+            value: 525,
+            weight: 1_500,
+            input_count: 1,
+            is_segwit: false,
+        },
+    ];
+    let cs = CoinSelector::new(&candidates);
+
+    let mut sel = cs.clone();
+    sel.select(0);
+    let mut d_all = sel.clone();
+    d_all.select(1);
+
+    let mut target = Target {
+        fee: TargetFee {
+            rate,
+            absolute: 0,
+            replace: None,
+        },
+        outputs: TargetOutputs {
+            value_sum: 0,
+            weight_sum: 100,
+            n_outputs: 1,
+        },
+        max_weight: None,
+    };
+    // T such that excess_with_drain(d_all) = 840 — above the 750 edge, so by excess alone
+    // {A, P} "has change" and the knapsack believes changeless descendants must shed P...
+    let drain = Drain {
+        weights: drain_weights,
+        value: 0,
+    };
+    target.outputs.value_sum =
+        20_525 - rate.implied_fee(d_all.weight(target.outputs, drain_weights)) - 840;
+    // ...but the cap refuses {A, P}'s change output, so {A, P} itself is changeless with its
+    // full input weight intact.
+    target.max_weight = Some(d_all.weight(target.outputs, DrainWeights::NONE));
+
+    assert!(
+        d_all.excess(target, drain) > 750,
+        "d_all must look change-worthy by excess alone"
+    );
+    assert_bound_admissible(metric, &sel, &d_all, target);
+}
+
 /// Sanity-check: the BnB solution must never have a change output, and its waste must be
 /// no greater than the waste of any changeless brute-force selection we try.
 #[test]

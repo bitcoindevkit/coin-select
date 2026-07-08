@@ -1,4 +1,5 @@
 use crate::{bnb::BnbMetric, float::Ordf32, CoinSelector, Drain, DrainWeights, FeeRate, Target};
+use alloc::vec::Vec;
 
 /// Metric that minimizes the [waste metric] subject to the constraint that the selection produces
 /// no change output.
@@ -181,6 +182,115 @@ impl ChangelessWaste {
         let least_excess_ewd = self.excess_with_drain_weight(&least_excess, target) as f64;
         least_excess_ewd - slack > self.changeless_max_excess() as f64
     }
+
+    /// LP-relaxed upper bound on `D.input_weight` for changeless `D ⊇ cs` (used by the
+    /// `rate_diff < 0` branch of [`bound`]).
+    ///
+    /// Construct `D_all = cs ∪ all unselected`. If `D_all` itself is changeless, the UB is
+    /// `D_all.input_weight`. Otherwise we must exclude enough excess-contributing
+    /// (positive-`effective_value`) candidates to drop `excess_with_drain_weight` down to the
+    /// largest still-changeless excess. To MAXIMIZE the remaining `input_weight` we MINIMIZE the
+    /// excluded weight, sorting positive-`ev` candidates by `ev / weight` descending and removing
+    /// fractionally until the required `delta` is met.
+    ///
+    /// The LP relaxation gives a value `>=` any integer solution's excluded weight, so
+    /// `D_all.input_weight - LP_min` is a safe UB for any feasible `D.input_weight`. The
+    /// `input_weight()` segwit/varint corrections only ever ADD weight to the parent, never
+    /// subtract from a subset — so the additive subtraction is safe in the UB direction.
+    ///
+    /// The knapsack credits each removed candidate its *rate*-based `effective_value`, so it is
+    /// only valid when the rate feerate is the binding fee constraint. When an absolute fee or an
+    /// RBF replacement is present it falls back to the trivial (always valid) `D_all` bound — see
+    /// the guard below.
+    ///
+    /// [`bound`]: BnbMetric::bound
+    fn ub_changeless_input_weight(
+        &self,
+        cs: &CoinSelector<'_>,
+        d_all: &CoinSelector<'_>,
+        target: Target,
+    ) -> f64 {
+        let d_all_iw = d_all.input_weight() as f64;
+
+        // With a `max_weight` cap, `drain_value` can refuse a heavy descendant's change (see the
+        // cap clause there): such a descendant is changeless while keeping every
+        // excess-contributing candidate, so the knapsack's premise below (changeless => must shed
+        // positive-ev weight) fails. Whenever the refusal is reachable, fall back to the `D_all`
+        // bound clamped by the cap (every scoreable descendant must fit the cap without a drain,
+        // and the non-input weight is the same for every descendant).
+        if let Some(max_weight) = target.max_weight {
+            if !d_all.is_within_max_weight(target, self.drain_weights) {
+                let non_input_weight =
+                    cs.weight(target.outputs, DrainWeights::NONE) - cs.input_weight();
+                return d_all_iw.min(max_weight.saturating_sub(non_input_weight) as f64);
+            }
+        }
+
+        // The knapsack below credits each removed candidate its *rate*-based `effective_value`,
+        // which equals the true excess reduction only when the rate feerate is the binding fee
+        // constraint. But `excess` is `min(rate, absolute, replacement)`: with an absolute fee,
+        // removing a candidate drops `absolute_excess` by its full `value`; with an RBF replacement
+        // (`incremental_relay_feerate < feerate`) it drops `replacement_excess` by `value - weight *
+        // incremental_relay_feerate` — both larger than its rate-ev. Crediting the smaller rate-ev
+        // would over-remove weight and yield a *below*-true (invalid, too-tight) upper bound, so
+        // fall back to the trivial `D_all` upper bound whenever a non-rate constraint can bind.
+        if target.fee.absolute > 0 || target.fee.replace.is_some() {
+            return d_all_iw;
+        }
+
+        let delta = self.excess_with_drain_weight(d_all, target) - self.changeless_max_excess();
+
+        // The knapsack below reasons in weight-unit-linear effective values, but a descendant's
+        // true excess comes from the vbyte-rounded fee (`fee(W) ∈ [W*spwu, W*spwu + sat_vb +
+        // 1]`), so a descendant can become changeless while shedding up to `sat_vb + 1` sats less
+        // than `delta` in linear terms. Demanding the full `delta` would over-remove weight and
+        // yield a below-true (invalid) upper bound. (`input_weight()`'s corrections err in the
+        // safe direction here: a removal sheds *at most* its linear ev.)
+        // (f64 for the same reason as in `change_unavoidable`: sat-magnitude values must not lose
+        // whole sats to float rounding.)
+        let mut remaining = delta as f64 - (target.fee.rate.as_sat_vb() as f64 + 1.0);
+        if remaining <= 0.0 {
+            return d_all_iw;
+        }
+
+        let spwu = target.fee.rate.spwu() as f64;
+        let mut pos: Vec<(f64, f64)> = cs
+            .unselected()
+            .filter_map(|(_, c)| {
+                let ev = c.value as f64 - c.weight as f64 * spwu;
+                if ev > 0.0 {
+                    Some((ev, c.weight as f64))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        pos.sort_by(|a, b| {
+            let r_a = a.0 / a.1;
+            let r_b = b.0 / b.1;
+            r_b.partial_cmp(&r_a).unwrap_or(core::cmp::Ordering::Equal)
+        });
+
+        let mut removed_weight = 0.0_f64;
+        for (ev, w) in pos {
+            if remaining <= 0.0 {
+                break;
+            }
+            if ev >= remaining {
+                removed_weight += w * (remaining / ev);
+                remaining = 0.0;
+            } else {
+                removed_weight += w;
+                remaining -= ev;
+            }
+        }
+        if remaining > 0.0 {
+            // Unreachable when `change_unavoidable = false` (which the caller already checked).
+            // Fall back to the loose `D_all`-based bound rather than fabricating a tight one.
+            return d_all_iw;
+        }
+        d_all_iw - removed_weight
+    }
 }
 
 impl BnbMetric for ChangelessWaste {
@@ -209,8 +319,8 @@ impl BnbMetric for ChangelessWaste {
             return None;
         }
 
-        // The changelessness prune and the `rate_diff < 0` arm below both reason about the
-        // heaviest descendant; build it once, since `bound` runs at every BnB node.
+        // Both helpers below reason about the heaviest descendant; build it once, since `bound`
+        // runs at every BnB node.
         let d_all = {
             let mut d_all = cs.clone();
             d_all.select_all();
@@ -231,10 +341,11 @@ impl BnbMetric for ChangelessWaste {
         // bound therefore reduces to bounding `D.input_weight` in the right direction.
 
         if rate_diff < 0.0 {
-            // rate_diff < 0: the most negative `D.input_weight * rate_diff` comes from the
-            // largest possible input_weight, which is bounded by selecting every candidate.
-            // (`D` need not actually be feasible — we only need an LB on its score.)
-            return Some(Ordf32(d_all.input_weight() as f32 * rate_diff));
+            // rate_diff < 0: we want an UPPER bound on `D.input_weight`. `all_selected` is a
+            // safe but loose UB; we tighten by LP-relaxed knapsack over candidates that
+            // *must* be excluded to keep the selection changeless.
+            let ub = self.ub_changeless_input_weight(cs, &d_all, target);
+            return Some(Ordf32((ub * rate_diff as f64) as f32));
         }
 
         // rate_diff >= 0: we want a LOWER bound on `D.input_weight`, i.e. on the *additional raw*
