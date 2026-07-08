@@ -415,7 +415,7 @@ where
         .take(max_rounds)
         .flatten()
         .last()
-        .ok_or(NoBnbSolution { max_rounds, rounds })?;
+        .ok_or(NoBnbSolution::RoundLimit { max_rounds, rounds })?;
     println!("\t\tsolution={}, score={}", selection, score);
     *cs = selection;
 
