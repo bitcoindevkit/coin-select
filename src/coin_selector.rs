@@ -361,6 +361,17 @@ impl<'a> CoinSelector<'a> {
         });
     }
 
+    /// Shuffle the candidates with Fisher-Yates algorithm.
+    ///
+    /// `rng` should yield uniform `u64`s.
+    pub fn shuffle_candidates(&mut self, mut rng: impl FnMut() -> u64) {
+        let candidates = Arc::make_mut(&mut self.candidate_order);
+        for i in (1..candidates.len()).rev() {
+            let j = (rng() % (i as u64 + 1)) as usize;
+            candidates.swap(i, j);
+        }
+    }
+
     /// The waste created by the current selection as measured by the [waste metric].
     ///
     /// You can pass in an `excess_discount` which must be between `0.0..1.0`. Passing in `1.0` gives you no discount
