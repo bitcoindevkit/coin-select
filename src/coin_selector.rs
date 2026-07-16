@@ -4,6 +4,10 @@ use crate::float::FloatExt;
 use crate::{bitset::Bitset, bnb::BnbMetric, float::Ordf32, ChangePolicy, FeeRate, Target};
 use alloc::{sync::Arc, vec::Vec};
 
+/// The minimum change amount Bitcoin Core's `SelectCoinsSRD` targets; a sensible default for the
+/// `change_lower` argument of [`CoinSelector::select_srd`].
+pub const CHANGE_LOWER: u64 = 50_000;
+
 /// [`CoinSelector`] selects/deselects coins from a set of canididate coins.
 ///
 /// You can manually select coins using methods like [`select`], or automatically with methods such
@@ -361,6 +365,17 @@ impl<'a> CoinSelector<'a> {
         });
     }
 
+    /// Shuffle the candidates with Fisher-Yates algorithm.
+    ///
+    /// `rng` should yield uniform `u64`s.
+    pub fn shuffle_candidates(&mut self, mut rng: impl FnMut() -> u64) {
+        let candidates = Arc::make_mut(&mut self.candidate_order);
+        for i in (1..candidates.len()).rev() {
+            let j = (rng() % (i as u64 + 1)) as usize;
+            candidates.swap(i, j);
+        }
+    }
+
     /// The waste created by the current selection as measured by the [waste metric].
     ///
     /// You can pass in an `excess_discount` which must be between `0.0..1.0`. Passing in `1.0` gives you no discount
@@ -593,6 +608,70 @@ impl<'a> CoinSelector<'a> {
                 break None;
             }
         }
+    }
+
+    /// Select candidates in random order ("Single Random Draw") until the change would be at least
+    /// `change_lower`.
+    ///
+    /// Unlike [`run_bnb`] with [`LowestFee`], this doesn't minimize fees — it deliberately produces
+    /// a healthy-sized (privacy-friendly) change output, avoiding tiny "toxic" change. It's a port
+    /// of Bitcoin Core's `SelectCoinsSRD`; pass [`CHANGE_LOWER`] for Core's value.
+    ///
+    /// The change *amount* comes out random on its own: because candidates are added in random order
+    /// and we stop as soon as the change reaches `change_lower`, the final change is wherever the
+    /// last (random) input pushed it — at or above `change_lower`. So, like Core, we use a fixed
+    /// lower bound rather than randomizing the target.
+    ///
+    /// On success it returns the [`Drain`] to attach, whose value is the achieved change (at least
+    /// `change_lower`). Returns [`SelectError::InsufficientFunds`] if the target plus `change_lower`
+    /// can't be met with the available candidates, or [`SelectError::MaxWeightExceeded`] if it can be
+    /// met but the resulting selection exceeds the weight cap.
+    ///
+    /// `rng` shuffles the candidates; it yields uniform `u64`s, e.g. `|| my_rng.next_u64()`. Any
+    /// already-selected candidates are kept and counted toward the target.
+    ///
+    /// [`run_bnb`]: Self::run_bnb
+    /// [`LowestFee`]: crate::metrics::LowestFee
+    // TODO: recover from exceeding `max_weight` by evicting the least-valuable inputs (matching
+    // Core's `max_selection_weight`) instead of erroring with `MaxWeightExceeded`. Deferred until
+    // the max-weight PR lands.
+    pub fn select_srd(
+        &mut self,
+        target: Target,
+        drain_weights: DrainWeights,
+        change_lower: u64,
+        rng: impl FnMut() -> u64,
+    ) -> Result<Drain, SelectError> {
+        self.shuffle_candidates(rng);
+
+        let mut is_within_max_weight = false;
+        let mut excess = 0_i64;
+
+        self.select_until(|cs| {
+            is_within_max_weight = cs.is_within_max_weight(target, drain_weights);
+            excess = cs.excess(
+                target,
+                Drain {
+                    weights: drain_weights,
+                    value: 0,
+                },
+            );
+            excess >= change_lower as i64 || !is_within_max_weight
+        })
+        .ok_or_else(|| {
+            SelectError::InsufficientFunds(InsufficientFunds {
+                missing: (change_lower as i64 - excess).unsigned_abs(),
+            })
+        })?;
+
+        if !is_within_max_weight {
+            return Err(SelectError::MaxWeightExceeded);
+        }
+
+        Ok(Drain {
+            weights: drain_weights,
+            value: excess as u64,
+        })
     }
 
     /// Return an iterator that can be used to select candidates.
