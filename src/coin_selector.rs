@@ -8,6 +8,21 @@ use alloc::{sync::Arc, vec::Vec};
 /// `change_lower` argument of [`CoinSelector::select_srd`].
 pub const CHANGE_LOWER: u64 = 50_000;
 
+/// An unconfirmed ancestor transaction that may need a fee bump (CPFP).
+///
+/// When spending unconfirmed UTXOs, miners evaluate the transaction as a package with its
+/// unconfirmed ancestors. If ancestors paid below the target feerate, the child must overpay.
+#[derive(Debug, Clone)]
+pub struct UnconfirmedAncestor {
+    /// The weight of the ancestor transaction in weight units.
+    pub weight: u64,
+    /// The fee already paid by the ancestor transaction in satoshis.
+    pub fee_paid: u64,
+    /// Candidate indices whose selection includes this ancestor in the CPFP package.
+    /// Indices use the candidate slice passed to [`CoinSelector::new`].
+    pub dependent_candidates: Vec<usize>,
+}
+
 /// [`CoinSelector`] selects/deselects coins from a set of canididate coins.
 ///
 /// You can manually select coins using methods like [`select`], or automatically with methods such
@@ -18,6 +33,12 @@ pub const CHANGE_LOWER: u64 = 50_000;
 #[derive(Debug, Clone)]
 pub struct CoinSelector<'a> {
     candidates: &'a [Candidate],
+    /// CPFP lookup table (via [`CoinSelector::with_ancestors`]). Each ancestor tracks the
+    /// candidates that depend on it.
+    ancestors: &'a [UnconfirmedAncestor],
+    /// The union of every ancestor's `dependent_candidates`, deduplicated. These are banned from
+    /// automatic selection; see [`CoinSelector::with_ancestors`].
+    ancestor_dependents: Bitset,
     selected: Bitset,
     banned: Bitset,
     candidate_order: Arc<Vec<usize>>,
@@ -38,10 +59,79 @@ impl<'a> CoinSelector<'a> {
     pub fn new(candidates: &'a [Candidate]) -> Self {
         Self {
             candidates,
+            ancestors: &[],
+            ancestor_dependents: Bitset::with_capacity(candidates.len()),
             selected: Bitset::with_capacity(candidates.len()),
             banned: Bitset::with_capacity(candidates.len()),
             candidate_order: Arc::new((0..candidates.len()).collect::<Vec<_>>()),
         }
+    }
+
+    /// Set the shared ancestor data for CPFP bump fee calculations.
+    ///
+    /// Each [`UnconfirmedAncestor`] contains the indices of candidates that depend on it. Every
+    /// such candidate is [`ban`]ned, so the automatic selection algorithms will never pick one on
+    /// their own. You can still [`select`] them manually — that is the intended CPFP flow: you
+    /// decide which unconfirmed UTXOs to spend, and this priced the resulting package for you.
+    ///
+    /// # Why they are banned
+    ///
+    /// The ancestor bump fee is a property of the *package*, not of any one candidate: ancestors
+    /// shared between candidates are counted once, and an overpaying ancestor subsidizes an
+    /// underpaying one. So the cost of adding a candidate depends on what else is selected.
+    ///
+    /// Every automatic algorithm here ranks and accumulates using per-candidate figures
+    /// ([`Candidate::effective_value`], [`Candidate::value_pwu`]), which cannot see ancestors. If
+    /// such candidates were selectable, adding one could *lower* the excess, and the algorithms
+    /// break in ways that produce no error: [`select_until_target_met`] and [`select_srd`] can
+    /// report insufficient funds when a funding selection exists, and branch and bound's bounds
+    /// stop being lower bounds, silently pruning the optimal solution.
+    ///
+    /// Banning keeps the ancestor set — and hence the bump — identical across every selection an
+    /// algorithm can reach, which is what those algorithms need to stay correct.
+    ///
+    /// # Panics
+    ///
+    /// If any `dependent_candidates` index is out of bounds for the candidate slice passed to
+    /// [`CoinSelector::new`].
+    ///
+    /// [`ban`]: Self::ban
+    /// [`select`]: Self::select
+    /// [`select_until_target_met`]: Self::select_until_target_met
+    /// [`select_srd`]: Self::select_srd
+    pub fn with_ancestors(mut self, ancestors: &'a [UnconfirmedAncestor]) -> Self {
+        for ancestor in ancestors {
+            for &candidate_index in &ancestor.dependent_candidates {
+                assert!(
+                    candidate_index < self.candidates.len(),
+                    "ancestor dependent candidate index {} out of bounds for {} candidates",
+                    candidate_index,
+                    self.candidates.len()
+                );
+                self.ancestor_dependents.insert(candidate_index);
+                self.ban(candidate_index);
+            }
+        }
+        self.ancestors = ancestors;
+        self
+    }
+
+    /// The candidates that have unconfirmed ancestors, by index into the original `candidates`
+    /// slice passed to [`CoinSelector::new`].
+    ///
+    /// These are exactly the candidates [`with_ancestors`] banned from automatic selection. To
+    /// spend one, [`select`] it manually — the [ancestor bump fee] is then priced into every
+    /// excess calculation.
+    ///
+    /// Prefer this over filtering [`banned`], which also contains any candidates you banned
+    /// yourself.
+    ///
+    /// [`with_ancestors`]: Self::with_ancestors
+    /// [`select`]: Self::select
+    /// [`banned`]: Self::banned
+    /// [ancestor bump fee]: Self::selected_ancestor_bump_fee
+    pub fn candidates_with_ancestors(&self) -> impl Iterator<Item = usize> + '_ {
+        self.ancestor_dependents.iter()
     }
 
     /// Iterate over all the candidates in their currently sorted order. Each item has the original
@@ -182,6 +272,40 @@ impl<'a> CoinSelector<'a> {
             + target_ouputs.output_weight_with_drain(drain_weight)
     }
 
+    /// Compute the package-level ancestor bump fee for the current selection at the given feerate.
+    ///
+    /// This includes ancestors with at least one selected dependent candidate, sums their weights
+    /// and fees once, then computes `max(0, implied_fee(total_weight, feerate) - total_fees)`.
+    ///
+    /// High-feerate ancestors subsidize low-feerate ones within the package (matching Bitcoin
+    /// Core's package relay approach).
+    pub fn selected_ancestor_bump_fee(&self, feerate: FeeRate) -> u64 {
+        if self.ancestors.is_empty() {
+            return 0;
+        }
+        debug_assert!(
+            self.ancestor_dependents
+                .iter()
+                .all(|i| self.banned.contains(i)),
+            "candidates with unconfirmed ancestors must stay banned, so that the ancestor bump \
+             fee is constant across every selection an algorithm can reach"
+        );
+        let mut total_weight = 0u64;
+        let mut total_fee_paid = 0u64;
+        for ancestor in self.ancestors {
+            if ancestor
+                .dependent_candidates
+                .iter()
+                .any(|&candidate_index| self.selected.contains(candidate_index))
+            {
+                total_weight += ancestor.weight;
+                total_fee_paid += ancestor.fee_paid;
+            }
+        }
+        let implied = feerate.implied_fee(total_weight);
+        implied.saturating_sub(total_fee_paid)
+    }
+
     /// How much the current selection overshoots the value needed to achieve `target`.
     ///
     /// In order for the resulting transaction to be valid this must be 0 or above. If it's above 0
@@ -208,7 +332,7 @@ impl<'a> CoinSelector<'a> {
         self.selected_value() as i64
             - target.value() as i64
             - drain.value as i64
-            - self.implied_fee_from_feerate(target, drain.weights) as i64
+            - self.implied_package_fee_from_feerate(target, drain.weights) as i64
     }
 
     /// Same as [rate_excess](Self::rate_excess) except `target.fee.rate` is applied to the
@@ -217,7 +341,7 @@ impl<'a> CoinSelector<'a> {
         self.selected_value() as i64
             - target.value() as i64
             - drain.value as i64
-            - self.implied_fee_from_feerate_wu(target, drain.weights) as i64
+            - self.implied_package_fee_from_feerate_wu(target, drain.weights) as i64
     }
 
     /// How much the current selection overshoots the value needed to satisfy `target.fee.absolute`
@@ -231,29 +355,19 @@ impl<'a> CoinSelector<'a> {
 
     /// How much the current selection overshoots the value needed to satisfy RBF's rule 4.
     pub fn replacement_excess(&self, target: Target, drain: Drain) -> i64 {
-        let mut replacement_excess_needed = 0;
-        if let Some(replace) = target.fee.replace {
-            replacement_excess_needed =
-                replace.min_fee_to_do_replacement(self.weight(target.outputs, drain.weights))
-        }
         self.selected_value() as i64
             - target.value() as i64
             - drain.value as i64
-            - replacement_excess_needed as i64
+            - self.implied_package_fee_from_replacement(target, drain.weights) as i64
     }
 
     /// Same as [replacement_excess](Self::replacement_excess) except the replacement fee
     /// is calculated using weight units directly without any conversion to vbytes.
     pub fn replacement_excess_wu(&self, target: Target, drain: Drain) -> i64 {
-        let mut replacement_excess_needed = 0;
-        if let Some(replace) = target.fee.replace {
-            replacement_excess_needed =
-                replace.min_fee_to_do_replacement_wu(self.weight(target.outputs, drain.weights))
-        }
         self.selected_value() as i64
             - target.value() as i64
             - drain.value as i64
-            - replacement_excess_needed as i64
+            - self.implied_package_fee_from_replacement_wu(target, drain.weights) as i64
     }
 
     /// The feerate the transaction would have if we were to use this selection of inputs to achieve
@@ -272,37 +386,84 @@ impl<'a> CoinSelector<'a> {
 
     /// The fee the current selection and `drain_weight` should pay to satisfy `target_fee`.
     ///
-    /// This compares the fee calculated from the target feerate with the fee calculated from the
-    /// [`Replace`] constraints and returns the larger of the two.
+    /// This is the largest of the fees implied by `target.fee.rate`, `target.fee.absolute` and the
+    /// [`Replace`] constraints. The feerate and replacement fees include any [ancestor bump fee];
+    /// `target.fee.absolute` is a minimum fee floor rather than an additive charge, so it does not.
+    ///
+    /// This is the exact counterpart of [`excess`](Self::excess):
+    /// `excess == selected_value - target.value() - drain.value - implied_fee`.
     ///
     /// `drain_weight` can be 0 to indicate no draining output.
+    ///
+    /// [ancestor bump fee]: Self::selected_ancestor_bump_fee
     pub fn implied_fee(&self, target: Target, drain_weights: DrainWeights) -> u64 {
-        let mut implied_fee = self
-            .implied_fee_from_feerate(target, drain_weights)
-            .max(target.fee.absolute);
-
-        if let Some(replace) = target.fee.replace {
-            implied_fee = Ord::max(
-                implied_fee,
-                replace.min_fee_to_do_replacement(self.weight(target.outputs, drain_weights)),
-            );
-        }
-
-        implied_fee
+        self.implied_package_fee_from_feerate(target, drain_weights)
+            .max(target.fee.absolute)
+            .max(self.implied_package_fee_from_replacement(target, drain_weights))
     }
 
-    fn implied_fee_from_feerate(&self, target: Target, drain_weights: DrainWeights) -> u64 {
+    /// The fee implied by `target.fee.rate` for the whole CPFP package — this transaction plus any
+    /// unconfirmed ancestors — i.e. the fee for the transaction's own weight plus the [ancestor
+    /// bump fee].
+    ///
+    /// The bump is folded in here rather than at each call site because every caller needs it.
+    ///
+    /// [ancestor bump fee]: Self::selected_ancestor_bump_fee
+    fn implied_package_fee_from_feerate(&self, target: Target, drain_weights: DrainWeights) -> u64 {
         target
             .fee
             .rate
             .implied_fee(self.weight(target.outputs, drain_weights))
+            + self.selected_ancestor_bump_fee(target.fee.rate)
     }
 
-    fn implied_fee_from_feerate_wu(&self, target: Target, drain_weights: DrainWeights) -> u64 {
+    /// Same as [`implied_package_fee_from_feerate`](Self::implied_package_fee_from_feerate) except `target.fee.rate`
+    /// is applied to weight units directly without any conversion to vbytes.
+    fn implied_package_fee_from_feerate_wu(
+        &self,
+        target: Target,
+        drain_weights: DrainWeights,
+    ) -> u64 {
         target
             .fee
             .rate
             .implied_fee_wu(self.weight(target.outputs, drain_weights))
+            + self.selected_ancestor_bump_fee(target.fee.rate)
+    }
+
+    /// The fee needed for the whole CPFP package to satisfy RBF's rule 4, i.e. the replacement fee
+    /// plus the [ancestor bump fee]. No replacement (`target.fee.replace` is `None`) still leaves
+    /// the bump to pay.
+    ///
+    /// [ancestor bump fee]: Self::selected_ancestor_bump_fee
+    fn implied_package_fee_from_replacement(
+        &self,
+        target: Target,
+        drain_weights: DrainWeights,
+    ) -> u64 {
+        let replacement_fee = match target.fee.replace {
+            Some(replace) => {
+                replace.min_fee_to_do_replacement(self.weight(target.outputs, drain_weights))
+            }
+            None => 0,
+        };
+        replacement_fee + self.selected_ancestor_bump_fee(target.fee.rate)
+    }
+
+    /// Same as [`implied_package_fee_from_replacement`](Self::implied_package_fee_from_replacement) except the
+    /// replacement fee is calculated using weight units directly without any conversion to vbytes.
+    fn implied_package_fee_from_replacement_wu(
+        &self,
+        target: Target,
+        drain_weights: DrainWeights,
+    ) -> u64 {
+        let replacement_fee = match target.fee.replace {
+            Some(replace) => {
+                replace.min_fee_to_do_replacement_wu(self.weight(target.outputs, drain_weights))
+            }
+            None => 0,
+        };
+        replacement_fee + self.selected_ancestor_bump_fee(target.fee.rate)
     }
 
     /// The actual fee the selection would pay if it was used in a transaction that had
@@ -314,8 +475,11 @@ impl<'a> CoinSelector<'a> {
     }
 
     /// The value of the current selected inputs minus the fee needed to pay for the selected inputs
+    /// and any ancestor bump fee.
     pub fn effective_value(&self, feerate: FeeRate) -> i64 {
-        self.selected_value() as i64 - (self.input_weight() as f32 * feerate.spwu()).ceil() as i64
+        self.selected_value() as i64
+            - (self.input_weight() as f32 * feerate.spwu()).ceil() as i64
+            - self.selected_ancestor_bump_fee(feerate) as i64
     }
 
     // /// Waste sum of all selected inputs.

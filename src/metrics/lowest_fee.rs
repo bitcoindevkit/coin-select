@@ -146,6 +146,10 @@ impl BnbMetric for LowestFee {
             // `drain_value`, where `change_value` is `excess_with_drain_weight` and `spend_fee` is
             // `drain_spend_cost`). With `v >= 0` the difference is strictly positive: B always
             // costs more.
+            //
+            // NOTE: this needs the ancestor bump fee to cancel between A and B, which holds only
+            // because `CoinSelector::with_ancestors` bans candidates with unconfirmed ancestors.
+            // See its docs.
             if self.drain_value(cs, target).is_none() {
                 // But a descendant might *add* a change output that improves the metric. This
                 // happens when the current selection is changeless only because the change would be
@@ -180,6 +184,10 @@ impl BnbMetric for LowestFee {
             Some(current_score)
         } else {
             // Step 1: select everything up until the input that hits the target.
+            //
+            // NOTE: this prices a greedy *prefix* that descendants need not select, so it is a
+            // lower bound only while the ancestor bump fee is the same for both. See
+            // `CoinSelector::with_ancestors`.
             let (mut cs, resize_index, to_resize) = cs
                 .clone()
                 .select_iter()
