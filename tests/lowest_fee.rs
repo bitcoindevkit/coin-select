@@ -29,7 +29,7 @@ proptest! {
         n_drain_outputs in 1usize..150,     // the number of drain outputs
         max_weight in common::maybe_max_weight(500u64..4_000), // optional max tx weight cap (wu)
     ) {
-        let params = common::StrategyParams { n_candidates, target_value, n_target_outputs, target_weight, replace, feerate, feerate_lt_diff, drain_weight, drain_spend_weight, drain_dust, n_drain_outputs , max_weight };
+        let params = common::StrategyParams { n_candidates, target_value, n_target_outputs, target_weight, replace, feerate, feerate_lt_diff, drain_weight, drain_spend_weight, drain_dust, n_drain_outputs , max_weight, absolute: 0 };
         let candidates = common::gen_candidates(params.n_candidates);
         let metric = params.lowest_fee_metric();
         common::can_eventually_find_best_solution(params, candidates, metric)?;
@@ -51,7 +51,7 @@ proptest! {
         n_drain_outputs in 1usize..150,     // the number of drain outputs
         max_weight in common::maybe_max_weight(500u64..4_000), // optional max tx weight cap (wu)
     ) {
-        let params = common::StrategyParams { n_candidates, target_value, n_target_outputs, target_weight, replace, feerate, feerate_lt_diff, drain_weight, drain_spend_weight, drain_dust, n_drain_outputs , max_weight };
+        let params = common::StrategyParams { n_candidates, target_value, n_target_outputs, target_weight, replace, feerate, feerate_lt_diff, drain_weight, drain_spend_weight, drain_dust, n_drain_outputs , max_weight, absolute: 0 };
         let candidates = common::gen_candidates(params.n_candidates);
         let metric = params.lowest_fee_metric();
         common::ensure_bound_is_not_too_tight(params, candidates, metric)?;
@@ -78,7 +78,7 @@ proptest! {
     ) {
         println!("== TEST ==");
 
-        let params = common::StrategyParams { n_candidates, target_value, n_target_outputs, target_weight, replace, feerate, feerate_lt_diff, drain_weight, drain_spend_weight, drain_dust, n_drain_outputs, max_weight: None };
+        let params = common::StrategyParams { n_candidates, target_value, n_target_outputs, target_weight, replace, feerate, feerate_lt_diff, drain_weight, drain_spend_weight, drain_dust, n_drain_outputs, max_weight: None, absolute: 0 };
         println!("{:?}", params);
 
         let candidates = vec![
@@ -124,7 +124,7 @@ proptest! {
         max_weight in common::maybe_max_weight(500u64..4_000), // optional max tx weight cap (wu)
     ) {
 
-        let params = common::StrategyParams { n_candidates, target_value, n_target_outputs, target_weight, replace, feerate, feerate_lt_diff, drain_weight, drain_spend_weight, drain_dust, n_drain_outputs , max_weight };
+        let params = common::StrategyParams { n_candidates, target_value, n_target_outputs, target_weight, replace, feerate, feerate_lt_diff, drain_weight, drain_spend_weight, drain_dust, n_drain_outputs , max_weight, absolute: 0 };
         let candidates = common::gen_candidates(params.n_candidates);
         let metric = params.lowest_fee_metric();
         common::compare_against_benchmarks(params, candidates, metric)?;
@@ -157,7 +157,7 @@ proptest! {
         n_drain_outputs in 1usize..150,
         max_weight in common::maybe_max_weight(500u64..4_000), // TRUC-tight -> binds often, small DP
     ) {
-        let params = common::StrategyParams { n_candidates, target_value, n_target_outputs, target_weight, replace, feerate, feerate_lt_diff, drain_weight, drain_spend_weight, drain_dust, n_drain_outputs, max_weight };
+        let params = common::StrategyParams { n_candidates, target_value, n_target_outputs, target_weight, replace, feerate, feerate_lt_diff, drain_weight, drain_spend_weight, drain_dust, n_drain_outputs, max_weight, absolute: 0 };
         let candidates = common::gen_candidates(params.n_candidates);
         let target = params.target();
         let metric = params.lowest_fee_metric();
@@ -192,6 +192,7 @@ fn combined_changeless_metric() {
         n_target_outputs: 1,
         n_drain_outputs: 1,
         max_weight: None,
+        absolute: 0,
     };
 
     let candidates = common::gen_candidates(params.n_candidates);

@@ -179,103 +179,24 @@ impl BnbMetric for LowestFee {
 
             Some(current_score)
         } else {
-            // Step 1: select everything up until the input that hits the target.
-            let (mut cs, resize_index, to_resize) = cs
-                .clone()
-                .select_iter()
-                .find(|(cs, _, _)| cs.is_funded(target))?;
+            // Walk the sorted unselected list until we cross the target, resizing the crossing
+            // input to hit the target with zero excess (see `resize_bound`).
+            match super::resize_bound(cs, target)? {
+                // The crossing selection is already perfect: return its fee directly. Use
+                // `fee_score` (not `score`): this selection is only a bound witness — it may bust
+                // `max_weight` (which makes `score` return `None`), but its fee is still a valid
+                // lower bound for every within-cap descendant.
+                super::ResizeBound::Exact(cs) => Some(self.fee_score(&cs, target).unwrap().0),
+                super::ResizeBound::Resize(cs, to_resize, scale) => {
+                    // `scale` could be 0 even if `is_funded` is `false` due to the latter being
+                    // based on rounded-up vbytes.
+                    let ideal_fee = scale * to_resize.value as f32 + cs.selected_value() as f32
+                        - target.value() as f32;
+                    assert!(ideal_fee >= 0.0);
 
-            // If this selection is already perfect, return its score directly.
-            if cs.excess(target, Drain::NONE) == 0 {
-                return Some(self.fee_score(&cs, target).unwrap().0);
-            };
-            cs.deselect(resize_index);
-
-            // We need to find the minimum fee we'd pay if we satisfy the feerate constraint. We do
-            // this by imagining we had a perfect input that perfectly hit the target. The sats per
-            // weight unit of this perfect input is that of `to_resize` but we'll do a scaled
-            // resize of it to fit perfectly.
-            //
-            // Here's the formaula:
-            //
-            // target_feerate = (current_input_value - current_output_value + scale * value_resized_input) / (current_weight + scale * weight_resized_input)
-            //
-            // Rearranging to find `scale` we find that:
-            //
-            // scale = remaining_value_to_reach_feerate / effective_value_of_resized_input
-            //
-            // This should be intutive since we're finding out how to scale the input we're resizing to get the effective value we need.
-            //
-            // In the perfect scenario, no additional fee would be required to pay for rounding up when converting from weight units to
-            // vbytes and so all fee calculations below are performed on weight units directly.
-            let rate_excess = cs.rate_excess_wu(target, Drain::NONE) as f32;
-            let mut scale = Ordf32(0.0);
-
-            if rate_excess < 0.0 {
-                let remaining_value_to_reach_feerate = rate_excess.abs();
-                let effective_value_of_resized_input = to_resize.effective_value(target.fee.rate);
-                if effective_value_of_resized_input > 0.0 {
-                    let feerate_scale =
-                        remaining_value_to_reach_feerate / effective_value_of_resized_input;
-                    scale = scale.max(Ordf32(feerate_scale));
-                } else {
-                    return None; // we can never satisfy the constraint
+                    Some(Ordf32(ideal_fee))
                 }
             }
-
-            // We can use the same approach for replacement we just have to use the
-            // incremental_relay_feerate.
-            if let Some(replace) = target.fee.replace {
-                let replace_excess = cs.replacement_excess_wu(target, Drain::NONE) as f32;
-                if replace_excess < 0.0 {
-                    let remaining_value_to_reach_feerate = replace_excess.abs();
-                    let effective_value_of_resized_input =
-                        to_resize.effective_value(replace.incremental_relay_feerate);
-                    if effective_value_of_resized_input > 0.0 {
-                        let replace_scale =
-                            remaining_value_to_reach_feerate / effective_value_of_resized_input;
-                        scale = scale.max(Ordf32(replace_scale));
-                    } else {
-                        return None; // we can never satisfy the constraint
-                    }
-                }
-            }
-            // Handle absolute fee constraint. Unlike feerate and replacement, the
-            // absolute fee is a fixed amount (not weight-proportional), so we just
-            // need enough raw value to cover the gap.
-            let absolute_excess = cs.absolute_excess(target, Drain::NONE) as f32;
-            if absolute_excess < 0.0 {
-                let remaining = absolute_excess.abs();
-                if to_resize.value > 0 {
-                    let absolute_scale = remaining / to_resize.value as f32;
-                    scale = scale.max(Ordf32(absolute_scale));
-                } else {
-                    return None; // we can never satisfy the constraint
-                }
-            }
-
-            // max_weight-aware: reaching the feerate needs a perfect input weighing
-            // `scale * to_resize.weight`. `to_resize` is the best value-per-weight input available,
-            // so if the current weight plus even that (fractional) minimum already busts the cap,
-            // no within-cap selection down this branch reaches the target -> prune. This is the
-            // fractional relaxation, so it never prunes a branch with an (integer) within-cap
-            // solution.
-            if let Some(max_weight) = target.max_weight {
-                if cs.weight(target.outputs, DrainWeights::NONE) as f32
-                    + scale.0 * to_resize.weight as f32
-                    > max_weight as f32
-                {
-                    return None;
-                }
-            }
-
-            // `scale` could be 0 even if `is_funded` is `false` due to the latter being based on
-            // rounded-up vbytes.
-            let ideal_fee = scale.0 * to_resize.value as f32 + cs.selected_value() as f32
-                - target.value() as f32;
-            assert!(ideal_fee >= 0.0);
-
-            Some(Ordf32(ideal_fee))
         }
     }
 
