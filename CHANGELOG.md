@@ -10,6 +10,7 @@
 - **Breaking:** Removed the `BnbMetric` tuple implementations (`impl BnbMetric for ((A, f32), ...)`). Weighted composition of independent metrics is no longer supported; the only composition still provided is the changeless constraint, now expressed as `Changeless<M>`. If you relied on tuples to blend multiple objectives, there is no drop-in replacement.
 - **Breaking:** `CoinSelector::selected_indices` and `CoinSelector::banned` now return `&Bitset` instead of `&BTreeSet<usize>`. `Bitset` exposes `contains`/`len`/`is_empty`/`iter` (#46)
 - Replace the internal `Cow<BTreeSet>`/`Cow<[usize]>` selection state with a `Bitset` and an `Arc`-shared candidate order, making the per-branch clones in branch-and-bound substantially cheaper (#46)
+- Fix `CoinSelector::input_weight` for candidates representing more than one input. In a segwit transaction every input serializes a witness, and a legacy input's empty one costs 1 weight unit, but that byte was added once per *candidate* rather than once per legacy *input*, undercounting a group of N legacy inputs by N-1. `Candidate::is_segwit` now applies to all of a candidate's inputs: a group must not mix script types. `Candidate::weight` is unchanged.
 - Fix compilation error when building with `--no-default-features` (#36)
 
 # 0.4.0

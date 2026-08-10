@@ -36,16 +36,20 @@ let candidates = vec![
         input_count: 1,
         // the value of the input
         value: 1_000_000,
-        // the total weight of the input(s) including their witness/scriptSig
-        // you may need to use miniscript to figure out the correct value here.
+        // the total weight of the input(s): prevout, nSequence, scriptSig and,
+        // for segwit inputs, the witness. You may need to use miniscript to
+        // figure out the correct value here. Don't count the empty witness a
+        // legacy input serializes in a segwit transaction -- whether that
+        // applies depends on the rest of the selection, so it's added for you.
         weight: TR_KEYSPEND_TXIN_WEIGHT,
-        // wether it's a segwit input. Needed so we know whether to include the
-        // segwit header in total weight calculations.
+        // whether these are segwit inputs. Decides the segwit header, and how
+        // many empty witnesses legacy inputs owe.
         is_segwit: true
     },
     Candidate {
-        // A candidate can represent multiple inputs in the case where you 
-        // always want some inputs to be spent together.
+        // A candidate can represent multiple inputs in the case where you
+        // always want some inputs to be spent together. They must all be the
+        // same script type -- either all segwit or all legacy.
         input_count: 2,
         weight: 2*TR_KEYSPEND_TXIN_WEIGHT,
         value: 3_000_000,
