@@ -271,9 +271,9 @@ impl BnbMetric for LowestFee {
 
             // `scale` could be 0 even if `is_funded` is `false` due to the latter being based on
             // rounded-up vbytes.
-            let ideal_fee = scale.0 * to_resize.value as f32 + cs.selected_value() as f32
-                - target.value() as f32;
-            assert!(ideal_fee >= 0.0);
+            let ideal_fee = (scale.0 * to_resize.value as f32 + cs.selected_value() as f32
+                - target.value() as f32)
+                .max(0.0);
 
             Some(Ordf32(ideal_fee))
         }
