@@ -434,3 +434,78 @@ fn run_bnb_reports_round_limit() {
         },
     );
 }
+
+#[test]
+fn bound_does_not_panic_on_f32_rounding() {
+    let candidate = vec![
+        Candidate {
+            value: 1_480_489,
+            weight: 2_663, input_count: 1, is_segwit: true
+        },
+        Candidate {
+            value: 4_167,
+            weight: 360,
+            input_count: 1,
+            is_segwit: true,
+        },
+        Candidate {
+            value: 13_447,
+            weight: 7_597,
+            input_count: 1,
+            is_segwit: true,
+        },
+        Candidate {
+            value: 17_281,
+            weight: 368,
+            input_count: 1,
+            is_segwit: true,
+        },
+        Candidate {
+            value: 26_718,
+            weight: 755,
+            input_count: 1,
+            is_segwit: true,
+        },
+        Candidate {
+            value: 237_889,
+            weight: 4_570,
+            input_count: 1,
+            is_segwit: true,
+        },
+        Candidate {
+            value: 273_139,
+            weight: 997,
+            input_count: 1,
+            is_segwit: true,
+        },
+        Candidate {
+            value: 145_266,
+            weight: 2_124,
+            input_count: 1,
+            is_segwit: true,
+        },
+    ];
+
+    let target = Target {
+        fee: TargetFee::ZERO,
+        outputs: TargetOutputs {
+            value_sum: 52_692,
+            weight_sum: 208,
+            n_outputs: 1,
+        },
+        max_weight: None,
+    };
+
+    let metric = LowestFee {
+        long_term_feerate: FeeRate::from_sat_per_wu(0.59),
+        dust_relay_feerate: FeeRate::from_sat_per_wu(1.4),
+        drain_weights: DrainWeights {
+            output_weight: 342,
+            spend_weight: 815,
+            n_outputs: 2,
+        },
+    };
+
+    let mut cs = CoinSelector::new(&candidate);
+    let _ = cs.run_bnb(target, metric, 100_000);
+}
