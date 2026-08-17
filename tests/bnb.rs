@@ -1,6 +1,7 @@
 mod common;
 use bdk_coin_select::{
-    float::Ordf32, BnbMetric, Candidate, CoinSelector, Drain, Target, TargetFee, TargetOutputs,
+    float::Ordf32, BnbMetric, Candidate, CoinSelector, Drain, SelectionProblem, SelectionView,
+    Target, TargetFee, TargetOutputs,
 };
 #[macro_use]
 extern crate alloc;
@@ -11,16 +12,16 @@ use proptest::{prelude::*, proptest, test_runner::*};
 fn test_wv(mut rng: impl RngCore) -> impl Iterator<Item = Candidate> {
     core::iter::repeat_with(move || {
         let value = rng.random_range(0..1_000);
-        let mut candidate = Candidate {
+        let candidate = Candidate {
             value,
             weight: 100,
-            input_count: rng.random_range(1..2),
-            is_segwit: rng.random_bool(0.5),
+            segwit_count: rng.random_range(1..2),
+            legacy_count: 0,
         };
-        // HACK: set is_segwit = true for all these tests because you can't actually lower bound
-        // things easily with how segwit inputs interfere with their weights. We can't modify the
-        // above since that would change what we pull from rng.
-        candidate.is_segwit = true;
+        // Keep drawing the bool these tests always drew so the rng stream (and therefore the
+        // generated cases) is unchanged. All candidates are segwit: mixing in legacy inputs makes
+        // their weights context-dependent, which these tests can't lower-bound easily.
+        let _ = rng.random_bool(0.5);
         candidate
     })
 }
@@ -32,8 +33,8 @@ struct MinExcessThenWeight;
 const EXCESS_RATIO: f32 = 1_000_000_f32;
 
 impl BnbMetric for MinExcessThenWeight {
-    fn score(&mut self, cs: &CoinSelector<'_>, target: Target) -> Option<Ordf32> {
-        let excess = cs.excess(target, Drain::NONE);
+    fn score(&mut self, cs: &SelectionView<'_>) -> Option<Ordf32> {
+        let excess = cs.excess(Drain::NONE);
         if excess < 0 {
             None
         } else {
@@ -43,13 +44,13 @@ impl BnbMetric for MinExcessThenWeight {
         }
     }
 
-    fn bound(&mut self, cs: &CoinSelector<'_>, target: Target) -> Option<Ordf32> {
-        let mut cs = cs.clone();
-        cs.select_until_target_met(target).ok()?;
-        Some(Ordf32(cs.input_weight() as f32))
+    fn bound(&mut self, cs: &SelectionView<'_>) -> Option<Ordf32> {
+        let mut cs = cs.selector().clone();
+        cs.select_until_target_met().ok()?;
+        Some(Ordf32(cs.compute_view().input_weight() as f32))
     }
 
-    fn drain(&mut self, _cs: &CoinSelector<'_>, _target: Target) -> Drain {
+    fn drain(&mut self, _cs: &SelectionView<'_>) -> Drain {
         Drain::NONE
     }
 }
@@ -62,25 +63,14 @@ fn bnb_finds_an_exact_solution_in_n_iter() {
     let num_additional_canidates = 12;
 
     let mut rng = TestRng::deterministic_rng(RngAlgorithm::ChaCha);
-    let mut wv = test_wv(&mut rng).map(|mut candidate| {
-        candidate.is_segwit = true;
-        candidate
-    });
+    let mut wv = test_wv(&mut rng);
 
     let solution: Vec<Candidate> = (0..solution_len).map(|_| wv.next().unwrap()).collect();
-    let solution_weight = {
-        let mut cs = CoinSelector::new(&solution);
-        cs.select_all();
-        cs.input_weight()
-    };
-
     let target_value = solution.iter().map(|c| c.value).sum();
 
-    let mut candidates = solution;
+    let mut candidates = solution.clone();
     candidates.extend(wv.take(num_additional_canidates));
     candidates.sort_unstable_by_key(|wv| core::cmp::Reverse(wv.value));
-
-    let cs = CoinSelector::new(&candidates);
 
     let target = Target {
         outputs: TargetOutputs {
@@ -93,7 +83,16 @@ fn bnb_finds_an_exact_solution_in_n_iter() {
         max_weight: None,
     };
 
-    let solutions = cs.bnb_solutions(target, MinExcessThenWeight);
+    let solution_weight = {
+        let problem = SelectionProblem::new_no_ancestors(target, solution.iter().copied());
+        let mut cs = CoinSelector::new(&problem);
+        cs.select_all();
+        cs.compute_view().input_weight()
+    };
+
+    let problem_2 = SelectionProblem::new_no_ancestors(target, candidates.iter().copied());
+    let cs = CoinSelector::new(&problem_2);
+    let solutions = cs.bnb_solutions(MinExcessThenWeight);
 
     let mut rounds = 0;
     let (best, score) = solutions
@@ -103,9 +102,19 @@ fn bnb_finds_an_exact_solution_in_n_iter() {
         .last()
         .expect("it found a solution");
 
-    assert_eq!(rounds, 3194);
-    assert_eq!(best.input_weight(), solution_weight);
-    assert_eq!(best.selected_value(), target_value, "score={:?}", score);
+    // Unchanged by deepening, and deliberately so: this problem has no unconfirmed ancestors, so
+    // `bnb_solutions` gates deepening off and dives. Deepening would in fact reach the same
+    // exact-value solution here in 2,970 rounds — but the gate is set by what happens under a
+    // *budget*, where re-expanding from the root costs a truncated ancestor-free search more than
+    // the better node order wins it.
+    assert_eq!(rounds, 62453);
+    assert_eq!(best.compute_view().input_weight(), solution_weight);
+    assert_eq!(
+        best.compute_view().selected_value(),
+        target_value,
+        "score={:?}",
+        score
+    );
 }
 
 #[test]
@@ -115,8 +124,6 @@ fn bnb_finds_solution_if_possible_in_n_iter() {
     let mut rng = TestRng::deterministic_rng(RngAlgorithm::ChaCha);
     let wv = test_wv(&mut rng);
     let candidates = wv.take(num_inputs).collect::<Vec<_>>();
-
-    let cs = CoinSelector::new(&candidates);
 
     let target = Target {
         outputs: TargetOutputs {
@@ -128,7 +135,9 @@ fn bnb_finds_solution_if_possible_in_n_iter() {
         max_weight: None,
     };
 
-    let solutions = cs.bnb_solutions(target, MinExcessThenWeight);
+    let problem_3 = SelectionProblem::new_no_ancestors(target, candidates.iter().copied());
+    let cs = CoinSelector::new(&problem_3);
+    let solutions = cs.bnb_solutions(MinExcessThenWeight);
 
     let mut rounds = 0;
     let (sol, _score) = solutions
@@ -138,9 +147,42 @@ fn bnb_finds_solution_if_possible_in_n_iter() {
         .last()
         .expect("found a solution");
 
-    assert_eq!(rounds, 164);
-    let excess = sol.excess(target, Drain::NONE);
+    assert_eq!(rounds, 95);
+    let excess = sol.compute_view().excess(Drain::NONE);
     assert_eq!(excess, 0);
+}
+
+#[test]
+fn exclusion_cursor_skips_preselected_equivalent_candidate() {
+    let candidates = [
+        Candidate::new_legacy(500, 100),
+        Candidate::new_legacy(500, 100),
+        Candidate::new_legacy(400, 100),
+    ];
+    let target = Target {
+        outputs: TargetOutputs {
+            value_sum: 900,
+            weight_sum: 0,
+            n_outputs: 1,
+        },
+        fee: TargetFee::ZERO,
+        max_weight: None,
+    };
+    let problem = SelectionProblem::new_no_ancestors(target, candidates);
+    let mut selector = problem.selector();
+    selector.select(1);
+
+    selector
+        .run_bnb(MinExcessThenWeight, 1_000)
+        .expect("must find a solution");
+
+    assert_eq!(
+        selector.selected_indices().iter().collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    for (index, _) in selector.selected() {
+        assert!(!selector.banned().contains(index));
+    }
 }
 
 proptest! {
@@ -150,19 +192,19 @@ proptest! {
         let mut rng = TestRng::deterministic_rng(RngAlgorithm::ChaCha);
         let wv = test_wv(&mut rng);
         let candidates = wv.take(num_inputs).collect::<Vec<_>>();
-        let cs = CoinSelector::new(&candidates);
 
         let target = Target {
             outputs: TargetOutputs { value_sum: target_value, weight_sum: 0, n_outputs: 1 },
             fee: TargetFee::ZERO,
             max_weight: None,
         };
-
-        let solutions = cs.bnb_solutions(target, MinExcessThenWeight);
+        let problem_4 = SelectionProblem::new_no_ancestors(target, candidates.iter().copied());
+        let cs = CoinSelector::new(&problem_4);
+        let solutions = cs.bnb_solutions(MinExcessThenWeight);
 
         match solutions.enumerate().filter_map(|(i, sol)| Some((i, sol?))).last() {
-            Some((_i, (sol, _score))) => assert!(sol.selected_value() >= target_value),
-            _ => prop_assert!(!cs.is_fundable(target)),
+            Some((_i, (sol, _score))) => assert!(sol.compute_view().selected_value() >= target_value),
+            _ => prop_assert!(!cs.compute_view().is_fundable()),
         }
     }
 
@@ -177,26 +219,10 @@ proptest! {
         let mut wv = test_wv(&mut rng);
 
         let solution: Vec<Candidate> = (0..solution_len).map(|_| wv.next().unwrap()).collect();
-        let solution_weight = {
-            let mut cs = CoinSelector::new(&solution);
-            cs.select_all();
-            cs.input_weight()
-        };
-
         let target_value = solution.iter().map(|c| c.value).sum();
 
-        let mut candidates = solution;
+        let mut candidates = solution.clone();
         candidates.extend(wv.take(num_additional_canidates));
-
-        let mut cs = CoinSelector::new(&candidates);
-
-
-        for i in 0..num_preselected.min(solution_len) {
-            cs.select(i);
-        }
-
-        // sort in descending value
-        cs.sort_candidates_by_key(|(_, wv)| core::cmp::Reverse(wv.value));
 
         let target = Target {
             outputs: TargetOutputs { value_sum: target_value, weight_sum: 0, n_outputs: 1 },
@@ -205,7 +231,23 @@ proptest! {
             max_weight: None,
         };
 
-        let solutions = cs.bnb_solutions(target, MinExcessThenWeight);
+        let solution_weight = {
+            let problem_5 = SelectionProblem::new_no_ancestors(target, solution.iter().copied());
+            let mut cs = CoinSelector::new(&problem_5);
+            cs.select_all();
+            cs.compute_view().input_weight()
+        };
+
+        let problem_6 = SelectionProblem::new_no_ancestors(target, candidates.iter().copied());
+        let mut cs = CoinSelector::new(&problem_6);
+        for i in 0..num_preselected.min(solution_len) {
+            cs.select(i);
+        }
+
+        // sort in descending value
+        cs.sort_candidates_by_key(|(_, wv)| core::cmp::Reverse(wv.value));
+
+        let solutions = cs.bnb_solutions(MinExcessThenWeight);
 
         let (_i, (best, _score)) = solutions
             .enumerate()
@@ -213,7 +255,7 @@ proptest! {
             .last()
             .expect("it found a solution");
 
-        prop_assert!(best.input_weight() <= solution_weight);
-        prop_assert_eq!(best.selected_value(), target.value());
+        prop_assert!(best.compute_view().input_weight() <= solution_weight);
+        prop_assert_eq!(best.compute_view().selected_value(), target.value());
     }
 }

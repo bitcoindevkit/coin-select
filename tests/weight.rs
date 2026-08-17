@@ -1,6 +1,9 @@
 #![allow(clippy::zero_prefixed_literal)]
 
-use bdk_coin_select::{Candidate, CoinSelector, Drain, DrainWeights, TargetOutputs};
+use bdk_coin_select::{
+    Candidate, CoinSelector, Drain, DrainWeights, SelectionProblem, Target, TargetFee,
+    TargetOutputs,
+};
 use bitcoin::{consensus::Decodable, ScriptBuf, Transaction};
 
 fn hex_val(c: u8) -> u8 {
@@ -21,6 +24,26 @@ pub fn hex_decode(hex: &str) -> Vec<u8> {
     bytes
 }
 
+// https://mempool.space/tx/5f231df4f73694b3cca9211e336451c20dab136e0a843c2e3166cdcb093e91f4
+const THREE_INPUT_LEGACY_TX_HEX: &str = "0100000003fe785783e14669f638ba902c26e8e3d7036fb183237bc00f8a10542191c7171300000000fdfd00004730440220418996f20477d143d02ad47e74e5949641b6c2904159ab7c592d2cfc659f9bd802205b18f18ac86b714971f84a8b74a4cb14ad5c1a5b9d0d939bb32c6ae4032f4ea10148304502210091296ff8dd87b5ebfc3d47cb82cfe4750d52c544a2b88a85970354a4d0d4b1db022069632067ee6f30f06145f649bc76d5e5d5e6404dbe985e006fcde938f778c297014c695221030502b8ade694d57a6e86998180a64f4ce993372830dc796c3d561ad8b2a504de210272b68e1c037c4630eff7ea5858640cc0748e36f5de82fb38529ef1fd0a89670d2103ba0544a3a2aa9f2314022760b78b5c833aebf6f88468a089550f93834a2886ed53aeffffffff7e048a7c53a8af656e24442c65fe4c4299b1494f6c7579fe0fd9fa741ce83e3279000000fc004730440220018fa343acccd048ed8f8f179e1b6ae27435a41b5fb2c1d96a5a772777acc6dc022074783814f2100c6fc4d4c976f941212be50825814502ca0cbe3f929db789979e0147304402206373f01b73fb09876d0f5ee3087e0614cab3be249934bc2b7eb64ee67f53dc8302200b50f8a327020172b82aaba7480c77ecf07bb32322a05f4afbc543aa97d2fde8014c69522103039d906b2494e310f6c7774c98618be552720d04781e073dd3ff25d5906f22662103d82026baa529619b103ec6341d548a7eb6d924061a8469a7416155513a3071c12102e452bc4aa726d44646ba80db70465683b30efde282a19aa35c6029ae8925df5e53aeffffffffef80f0b1cc543de4f73d59c02a3c575ae5d0af17c1e11e6be7abe3325c777507ad000000fdfd00004730440220220fee11bf836621a11a8ea9100a4600c109c13895f11468d3e2062210c5481902201c5c8a462175538e87b8248e1ed3927c3a461c66d1b46215641c875e86eb22c4014830450221008d2de8c2f20a720129c372791e595b9602b1a9bce99618497aec5266148ffc1302203a493359d700ed96323f8805ed03e909959ff0f22eff359028db6861486b1555014c6952210374a4add33567f09967592c5bcdc3db421fdbba67bac4636328f96d941da31bd221039636c2ffac90afb7499b16e265078113dfb2d77b54270e37353217c9eaeaf3052103d0bcea6d10cdd2f16018ea71572631708e26f457f67cda36a7f816a87f7791d253aeffffffff04977261000000000016001470385d054721987f41521648d7b2f5c77f735d6bee92030000000000225120d0cda1b675a0b369964cbfa381721aae3549dd2c9c6f2cf71ff67d5bc277afd3f2aaf30000000000160014ed2d41ba08313dbb2630a7106b2fedafc14aa121d4f0c70000000000220020e5c7c00d174631d2d1e365d6347b016fb87b6a0c08902d8e443989cb771fa7ec00000000";
+
+/// The 3-legacy-input mainnet tx above.
+fn legacy_three_input_tx() -> Transaction {
+    Transaction::consensus_decode(&mut hex_decode(THREE_INPUT_LEGACY_TX_HEX).as_slice()).unwrap()
+}
+
+/// The same tx with the middle input turned into a (semi-realistic) P2WPKH segwit spend.
+fn legacy_three_input_tx_mixed() -> Transaction {
+    let mut tx = legacy_three_input_tx();
+    tx.input[1].script_sig = ScriptBuf::default();
+    tx.input[1].witness = vec![
+        // semi-realistic p2wpkh spend
+        hex_decode("3045022100bdc115b86e9c863279132b4808459cf9b266c8f6a9c14a3dfd956986b807e3320220265833b85197679687c5d5eed1b2637489b34249d44cf5d2d40bc7b514181a5101"),
+        hex_decode("02077741a668889ce15d59365886375aea47a7691941d7a0d301697edbc773b45b"),
+    ].into();
+    tx
+}
+
 #[test]
 fn segwit_one_input_one_output() {
     // FROM https://mempool.space/tx/e627fbb7f775a57fd398bf9b150655d4ac3e1f8afed4255e74ee10d7a345a9cc
@@ -35,8 +58,8 @@ fn segwit_one_input_one_output() {
         .map(|(txin, value)| Candidate {
             value,
             weight: txin.segwit_weight().to_wu(),
-            input_count: 1,
-            is_segwit: true,
+            segwit_count: 1,
+            legacy_count: 0,
         })
         .collect::<Vec<_>>();
 
@@ -46,15 +69,24 @@ fn segwit_one_input_one_output() {
         n_outputs: tx.output.len(),
     };
 
-    let mut coin_selector = CoinSelector::new(&candidates);
+    let target = Target {
+        outputs: target_ouputs,
+        fee: TargetFee::ZERO,
+        max_weight: None,
+    };
+    let problem = SelectionProblem::new_no_ancestors(target, candidates.iter().copied());
+    let mut coin_selector = CoinSelector::new(&problem);
     coin_selector.select_all();
 
     assert_eq!(
-        coin_selector.weight(target_ouputs, DrainWeights::NONE),
+        coin_selector
+            .compute_view()
+            .weight(target_ouputs, DrainWeights::NONE),
         tx.weight().to_wu()
     );
     assert_eq!(
         (coin_selector
+            .compute_view()
             .implied_feerate(target_ouputs, Drain::NONE)
             .unwrap()
             .as_sat_vb()
@@ -78,27 +110,35 @@ fn segwit_two_inputs_one_output() {
         .map(|(txin, value)| Candidate {
             value,
             weight: txin.segwit_weight().to_wu(),
-            input_count: 1,
-            is_segwit: true,
+            segwit_count: 1,
+            legacy_count: 0,
         })
         .collect::<Vec<_>>();
-
-    let mut coin_selector = CoinSelector::new(&candidates);
 
     let target_ouputs = TargetOutputs {
         value_sum: tx.output.iter().map(|output| output.value.to_sat()).sum(),
         weight_sum: tx.output.iter().map(|output| output.weight().to_wu()).sum(),
         n_outputs: tx.output.len(),
     };
+    let target = Target {
+        outputs: target_ouputs,
+        fee: TargetFee::ZERO,
+        max_weight: None,
+    };
+    let problem_2 = SelectionProblem::new_no_ancestors(target, candidates.iter().copied());
+    let mut coin_selector = CoinSelector::new(&problem_2);
 
     coin_selector.select_all();
 
     assert_eq!(
-        coin_selector.weight(target_ouputs, DrainWeights::NONE),
+        coin_selector
+            .compute_view()
+            .weight(target_ouputs, DrainWeights::NONE),
         tx.weight().to_wu()
     );
     assert_eq!(
         (coin_selector
+            .compute_view()
             .implied_feerate(target_ouputs, Drain::NONE)
             .unwrap()
             .as_sat_vb()
@@ -122,8 +162,8 @@ fn legacy_three_inputs() {
         .map(|(txin, value)| Candidate {
             value,
             weight: txin.legacy_weight().to_wu(),
-            input_count: 1,
-            is_segwit: false,
+            segwit_count: 0,
+            legacy_count: 1,
         })
         .collect::<Vec<_>>();
 
@@ -133,15 +173,24 @@ fn legacy_three_inputs() {
         n_outputs: tx.output.len(),
     };
 
-    let mut coin_selector = CoinSelector::new(&candidates);
+    let target = Target {
+        outputs: target_ouputs,
+        fee: TargetFee::ZERO,
+        max_weight: None,
+    };
+    let problem_3 = SelectionProblem::new_no_ancestors(target, candidates.iter().copied());
+    let mut coin_selector = CoinSelector::new(&problem_3);
     coin_selector.select_all();
 
     assert_eq!(
-        coin_selector.weight(target_ouputs, DrainWeights::NONE),
+        coin_selector
+            .compute_view()
+            .weight(target_ouputs, DrainWeights::NONE),
         orig_weight.to_wu()
     );
     assert_eq!(
         (coin_selector
+            .compute_view()
             .implied_feerate(target_ouputs, Drain::NONE)
             .unwrap()
             .as_sat_vb()
@@ -179,8 +228,8 @@ fn legacy_three_inputs_one_segwit() {
                     txin.legacy_weight()
                 }
                 .to_wu(),
-                input_count: 1,
-                is_segwit,
+                segwit_count: is_segwit as usize,
+                legacy_count: !is_segwit as usize,
             }
         })
         .collect::<Vec<_>>();
@@ -191,11 +240,147 @@ fn legacy_three_inputs_one_segwit() {
         n_outputs: tx.output.len(),
     };
 
-    let mut coin_selector = CoinSelector::new(&candidates);
+    let target = Target {
+        outputs: target_ouputs,
+        fee: TargetFee::ZERO,
+        max_weight: None,
+    };
+    let problem_4 = SelectionProblem::new_no_ancestors(target, candidates.iter().copied());
+    let mut coin_selector = CoinSelector::new(&problem_4);
     coin_selector.select_all();
 
     assert_eq!(
-        coin_selector.weight(target_ouputs, DrainWeights::NONE),
+        coin_selector
+            .compute_view()
+            .weight(target_ouputs, DrainWeights::NONE),
+        tx.weight().to_wu()
+    );
+}
+
+#[test]
+fn legacy_three_inputs_grouped() {
+    // Same tx as `legacy_three_inputs`, but all three legacy inputs carried by a single candidate.
+    // No witness section is serialized, so nothing is added per legacy input — this guards the
+    // all-legacy path (it also passed under the old per-candidate accounting).
+    let tx = legacy_three_input_tx();
+    let input_values = [022_680_000, 006_558_175, 006_558_200];
+
+    let candidates = [Candidate {
+        value: input_values.iter().sum(),
+        weight: tx
+            .input
+            .iter()
+            .map(|txin| txin.legacy_weight().to_wu())
+            .sum(),
+        segwit_count: 0,
+        legacy_count: tx.input.len(),
+    }];
+
+    let target_ouputs = TargetOutputs {
+        value_sum: tx.output.iter().map(|output| output.value.to_sat()).sum(),
+        weight_sum: tx.output.iter().map(|output| output.weight().to_wu()).sum(),
+        n_outputs: tx.output.len(),
+    };
+
+    let target = Target {
+        outputs: target_ouputs,
+        fee: TargetFee::ZERO,
+        max_weight: None,
+    };
+    let problem_5 = SelectionProblem::new_no_ancestors(target, candidates.iter().copied());
+    let mut coin_selector = CoinSelector::new(&problem_5);
+    coin_selector.select_all();
+
+    assert_eq!(
+        coin_selector
+            .compute_view()
+            .weight(target_ouputs, DrainWeights::NONE),
+        tx.weight().to_wu()
+    );
+}
+
+#[test]
+fn legacy_pair_grouped_with_segwit_input() {
+    // Same tx as `legacy_three_inputs_one_segwit`, but the two legacy inputs are grouped into a
+    // single candidate. In a segwit tx each legacy input still serializes an (empty) witness
+    // costing 1 WU, so the grouped candidate must pay 2 WU — not 1 — for its two empty witnesses.
+    let tx = legacy_three_input_tx_mixed();
+    let input_values = [022_680_000, 006_558_175, 006_558_200];
+
+    let candidates = [
+        Candidate {
+            value: input_values[0] + input_values[2],
+            weight: tx.input[0].legacy_weight().to_wu() + tx.input[2].legacy_weight().to_wu(),
+            segwit_count: 0,
+            legacy_count: 2,
+        },
+        Candidate {
+            value: input_values[1],
+            weight: tx.input[1].segwit_weight().to_wu(),
+            segwit_count: 1,
+            legacy_count: 0,
+        },
+    ];
+
+    let target_ouputs = TargetOutputs {
+        value_sum: tx.output.iter().map(|output| output.value.to_sat()).sum(),
+        weight_sum: tx.output.iter().map(|output| output.weight().to_wu()).sum(),
+        n_outputs: tx.output.len(),
+    };
+
+    let target = Target {
+        outputs: target_ouputs,
+        fee: TargetFee::ZERO,
+        max_weight: None,
+    };
+    let problem_6 = SelectionProblem::new_no_ancestors(target, candidates.iter().copied());
+    let mut coin_selector = CoinSelector::new(&problem_6);
+    coin_selector.select_all();
+
+    assert_eq!(
+        coin_selector
+            .compute_view()
+            .weight(target_ouputs, DrainWeights::NONE),
+        tx.weight().to_wu()
+    );
+}
+
+#[test]
+fn mixed_group_all_inputs_one_candidate() {
+    // Same tx as `legacy_three_inputs_one_segwit`, with all three inputs — legacy *and* segwit —
+    // in a single mixed candidate. `legacy_count`/`segwit_count` price this exactly: 2 WU for the
+    // two empty legacy witnesses, the segwit header once, and a 3-input varint.
+    let tx = legacy_three_input_tx_mixed();
+    let input_values = [022_680_000, 006_558_175, 006_558_200];
+
+    let candidates = [Candidate {
+        value: input_values.iter().sum(),
+        weight: tx.input[0].legacy_weight().to_wu()
+            + tx.input[1].segwit_weight().to_wu()
+            + tx.input[2].legacy_weight().to_wu(),
+        segwit_count: 1,
+        legacy_count: 2,
+    }];
+
+    let target_ouputs = TargetOutputs {
+        value_sum: tx.output.iter().map(|output| output.value.to_sat()).sum(),
+        weight_sum: tx.output.iter().map(|output| output.weight().to_wu()).sum(),
+        n_outputs: tx.output.len(),
+    };
+
+    let target = Target {
+        outputs: target_ouputs,
+        fee: TargetFee::ZERO,
+        max_weight: None,
+    };
+    let problem_7 = SelectionProblem::new_no_ancestors(target, candidates.iter().copied());
+    let mut coin_selector = CoinSelector::new(&problem_7);
+    coin_selector.select_all();
+
+    assert_eq!(
+        coin_selector
+            .compute_view()
+            .weight(target_ouputs, DrainWeights::NONE),
         tx.weight().to_wu()
     );
 }

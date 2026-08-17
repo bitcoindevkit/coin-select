@@ -29,3 +29,8 @@ criterion = "0.5"
 [[bench]]
 name = "coin_selector"
 harness = false
+
+# Enable debug symbols so profilers (perf, samply, flamegraph) can resolve
+# function names. No runtime cost.
+[profile.bench]
+debug = true
