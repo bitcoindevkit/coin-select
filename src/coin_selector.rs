@@ -28,6 +28,90 @@ pub struct CoinSelector<'a> {
     selected_value: u64,
     selected_weight: u64,
     selected_input_count: usize,
+    /// Running sums over the unconfirmed ancestors the selection drags in. See
+    /// [`ancestor_bump`](Self::ancestor_bump).
+    ancestors: AncestorTotals,
+}
+
+/// Running totals over the unconfirmed ancestors the selected candidates drag in.
+///
+/// [`CoinSelector`] decides *when* a candidate's ancestors arrive or leave (when its selected bit
+/// actually changes); the bookkeeping for *what* that changes lives here.
+#[derive(Debug, Clone)]
+struct AncestorTotals {
+    /// `(weight, fee)` of the selected candidates' private ancestors. Each is reachable through one
+    /// candidate only, so a plain sum never counts one twice.
+    private: (u64, u64),
+    /// How many selected candidates drag in each shared ancestor. Empty unless the problem has
+    /// shared ancestors.
+    shared_refcounts: Vec<u32>,
+    /// `(weight, fee)` of the shared ancestors with a non-zero refcount, each counted once.
+    shared: (u64, u64),
+}
+
+impl AncestorTotals {
+    fn new(problem: &SelectionProblem) -> Self {
+        let shared_len = if problem.has_shared_ancestors() {
+            problem.ancestors().len()
+        } else {
+            0
+        };
+        Self {
+            private: (0, 0),
+            shared_refcounts: alloc::vec![0; shared_len],
+            shared: (0, 0),
+        }
+    }
+
+    /// Summed `(weight, fee)` of every ancestor the selection drags in, each counted once.
+    fn selected(&self) -> (u64, u64) {
+        (
+            self.private.0 + self.shared.0,
+            self.private.1 + self.shared.1,
+        )
+    }
+
+    /// Candidate `index` was selected.
+    fn add_selected(&mut self, problem: &SelectionProblem, index: usize) {
+        if problem.has_private_ancestors() {
+            let (weight, fee) = problem.private_ancestors(index);
+            self.private.0 += weight;
+            self.private.1 += fee;
+        }
+        if problem.has_shared_ancestors() {
+            for &anc_index in problem.shared_drags_in(index) {
+                let anc_index = anc_index as usize;
+                let refcount = &mut self.shared_refcounts[anc_index];
+                if *refcount == 0 {
+                    let (weight, fee) = problem.ancestors()[anc_index];
+                    self.shared.0 += weight;
+                    self.shared.1 += fee;
+                }
+                *refcount += 1;
+            }
+        }
+    }
+
+    /// Candidate `index` was deselected.
+    fn sub_selected(&mut self, problem: &SelectionProblem, index: usize) {
+        if problem.has_private_ancestors() {
+            let (weight, fee) = problem.private_ancestors(index);
+            self.private.0 -= weight;
+            self.private.1 -= fee;
+        }
+        if problem.has_shared_ancestors() {
+            for &anc_index in problem.shared_drags_in(index) {
+                let anc_index = anc_index as usize;
+                let refcount = &mut self.shared_refcounts[anc_index];
+                *refcount -= 1;
+                if *refcount == 0 {
+                    let (weight, fee) = problem.ancestors()[anc_index];
+                    self.shared.0 -= weight;
+                    self.shared.1 -= fee;
+                }
+            }
+        }
+    }
 }
 
 impl<'a> CoinSelector<'a> {
@@ -50,6 +134,7 @@ impl<'a> CoinSelector<'a> {
             selected_value: 0,
             selected_weight: 0,
             selected_input_count: 0,
+            ancestors: AncestorTotals::new(problem),
         }
     }
 
@@ -134,6 +219,7 @@ impl<'a> CoinSelector<'a> {
             self.selected_value -= candidate.value;
             self.selected_weight -= candidate.weight;
             self.selected_input_count -= candidate.input_count;
+            self.ancestors.sub_selected(self.problem, index);
         }
         removed
     }
@@ -155,6 +241,7 @@ impl<'a> CoinSelector<'a> {
             self.selected_value += candidate.value;
             self.selected_weight += candidate.weight;
             self.selected_input_count += candidate.input_count;
+            self.ancestors.add_selected(self.problem, index);
         }
         inserted
     }
@@ -202,17 +289,27 @@ impl<'a> CoinSelector<'a> {
     /// fees) — i.e. whether enough value is reachable for [`is_funded`] to hold. Respects
     /// [`ban`]ned candidates.
     ///
-    /// Selecting *all* effective inputs maximizes the value available, so if that can't meet the
-    /// target value, nothing can. Monotone, hence exact.
+    /// The current selection is checked first, then the current selection plus every remaining
+    /// candidate with positive effective value. The first check matters because transaction
+    /// framing can make adding a candidate that is worth more than its own weight lower the excess:
+    /// the input that pushes the input count past 252 grows its varint by 8 WU.
     ///
     /// NOTE: this does **not** account for [`Target::max_weight`] — a `true` result can still be
     /// infeasible under the weight cap. Use [`select_until_target_met`] or branch and bound (both of
     /// which enforce the cap) to actually build a selection.
     ///
+    /// NOTE: with unconfirmed ancestors ([`SelectionProblem::has_ancestors`]) this is a heuristic
+    /// and can answer either way. Funding is not monotone then: an input can drag in an ancestor
+    /// that costs more than the input is worth, and inputs sharing an ancestor pay for it once
+    /// between them. Use branch and bound to decide feasibility exactly.
+    ///
     /// [`ban`]: Self::ban
     /// [`is_funded`]: Self::is_funded
     /// [`select_until_target_met`]: Self::select_until_target_met
     pub fn is_fundable(&self) -> bool {
+        if self.is_funded() {
+            return true;
+        }
         let mut test = self.clone();
         test.select_all_effective();
         test.is_funded()
@@ -235,6 +332,47 @@ impl<'a> CoinSelector<'a> {
     /// Absolute value sum of all selected inputs.
     pub fn selected_value(&self) -> u64 {
         self.selected_value
+    }
+
+    /// The unconfirmed ancestors the current selection drags in (indices into
+    /// [`SelectionProblem::ancestors`]).
+    ///
+    /// This is the **union** over the selected candidates, so an ancestor shared by several of them
+    /// appears once. Deselecting a candidate keeps an ancestor that another selected candidate
+    /// still drags in.
+    pub fn selected_ancestors(&self) -> Bitset {
+        let mut union = Bitset::with_capacity(self.problem.ancestors().len());
+        if self.problem.has_ancestors() {
+            for cand_index in self.selected.iter() {
+                for &anc_index in self.problem.drags_in(cand_index) {
+                    union.insert(anc_index as usize);
+                }
+            }
+        }
+        union
+    }
+
+    /// The fee (sats) this selection must pay *on top of* its own feerate obligation so the
+    /// unconfirmed ancestors it drags in reach `target.fee.rate` (CPFP).
+    ///
+    /// Charged over the ancestors this selection drags in, taken **once each** — never by summing
+    /// [`SelectionProblem::local_bump`], which would charge a shared ancestor once per candidate.
+    /// Weight and fee are netted across them, so an ancestor paying above the rate offsets one
+    /// paying below it, and the result saturates at 0 (an ancestor that overpays never funds the
+    /// child).
+    ///
+    /// Note this makes funding **non-monotone**: selecting a candidate that drags in an
+    /// underpaying ancestor can lower [`excess`](Self::excess). It also means the bump is not
+    /// additive over candidates, and a descendant selection can owe *less* than its parent (by
+    /// dragging in an ancestor that already overpays).
+    pub fn ancestor_bump(&self) -> u64 {
+        if !self.problem.has_ancestors() {
+            return 0;
+        }
+        crate::selection_problem::ancestor_shortfall(
+            self.target().fee.rate,
+            self.ancestors.selected(),
+        )
     }
 
     /// Current weight of transaction implied by the selection.
@@ -270,6 +408,8 @@ impl<'a> CoinSelector<'a> {
 
     /// How much the current selection overshoots the value need to satisfy `self.target().fee.rate` and
     /// `self.target().value` (while ignoring `self.target().fee.absolute`).
+    ///
+    /// The feerate obligation includes the [`ancestor_bump`](Self::ancestor_bump).
     pub fn rate_excess(&self, drain: Drain) -> i64 {
         self.selected_value() as i64
             - self.target().value() as i64
@@ -325,6 +465,9 @@ impl<'a> CoinSelector<'a> {
     /// The feerate the transaction would have if we were to use this selection of inputs to achieve
     /// the `target`'s value and weight. It is essentially telling you what target feerate you currently have.
     ///
+    /// This is the *child* transaction's feerate: the fee and weight of any unconfirmed ancestors
+    /// this selection drags in are not included, so it is not the package feerate.
+    ///
     /// Returns `None` if the feerate would be negative or infinity.
     pub fn implied_feerate(&self, drain: Drain) -> Option<FeeRate> {
         let numerator = self.selected_value() as i64
@@ -342,6 +485,9 @@ impl<'a> CoinSelector<'a> {
     ///
     /// This compares the fee calculated from the target feerate with the fee calculated from the
     /// [`Replace`] constraints and returns the larger of the two.
+    ///
+    /// The feerate component includes the [`ancestor_bump`](Self::ancestor_bump); the absolute and
+    /// replacement components are child-transaction constraints and are left alone.
     ///
     /// `drain_weight` can be 0 to indicate no draining output.
     pub fn implied_fee(&self, drain_weights: DrainWeights) -> u64 {
@@ -364,6 +510,7 @@ impl<'a> CoinSelector<'a> {
             .fee
             .rate
             .implied_fee(self.weight(drain_weights))
+            + self.ancestor_bump()
     }
 
     fn implied_fee_from_feerate_wu(&self, drain_weights: DrainWeights) -> u64 {
@@ -371,6 +518,31 @@ impl<'a> CoinSelector<'a> {
             .fee
             .rate
             .implied_fee_wu(self.weight(drain_weights))
+            + self.ancestor_bump()
+    }
+
+    /// A lower bound on the child fee this selection, or any selection extending it, must pay.
+    ///
+    /// Monotone in weight: it prices only the child weight so far (at whichever of the vbyte and
+    /// weight-unit roundings is lower) against the rate, absolute, and replacement constraints, and
+    /// ignores the (non-monotone) [`ancestor_bump`](Self::ancestor_bump).
+    pub(crate) fn fee_floor(&self) -> u64 {
+        let target = self.target();
+        let weight = self.weight(DrainWeights::NONE);
+        let rate_floor = target
+            .fee
+            .rate
+            .implied_fee_wu(weight)
+            .min(target.fee.rate.implied_fee(weight));
+        let mut floor = rate_floor.max(target.fee.absolute);
+        if let Some(replace) = target.fee.replace {
+            floor = floor.max(
+                replace
+                    .min_fee_to_do_replacement_wu(weight)
+                    .min(replace.min_fee_to_do_replacement(weight)),
+            );
+        }
+        floor
     }
 
     /// The actual fee the selection would pay if it was used in a transaction that had
@@ -382,6 +554,9 @@ impl<'a> CoinSelector<'a> {
     }
 
     /// The value of the current selected inputs minus the fee needed to pay for the selected inputs
+    ///
+    /// Only the selected inputs' own weight is charged; any [`ancestor_bump`](Self::ancestor_bump)
+    /// they drag in is not.
     pub fn effective_value(&self) -> i64 {
         self.selected_value() as i64
             - (self.input_weight() as f32 * self.target().fee.rate.spwu()).ceil() as i64
@@ -776,7 +951,8 @@ impl<'a> CoinSelector<'a> {
         // No solution. If the iterator still has an item we stopped at the round limit and a
         // solution may still exist with a larger `max_rounds`. Otherwise the tree was fully
         // explored, so no selection satisfies the target — a genuine infeasibility, split into
-        // value vs weight.
+        // value vs weight. (With unconfirmed ancestors `is_fundable` is only a heuristic, so the
+        // split between the two can be wrong — the infeasibility itself is not.)
         if iter.next().is_some() {
             assert_eq!(rounds, max_rounds); // still-yielding ⟹ we truncated at the cap
             return Err(NoBnbSolution::RoundLimit { max_rounds, rounds });
@@ -891,6 +1067,10 @@ impl std::error::Error for SelectError {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoBnbSolution {
     /// The candidates can't cover the target value, so no selection is possible.
+    ///
+    /// With unconfirmed ancestors this is decided by the heuristic [`CoinSelector::is_fundable`], so
+    /// it may be reported where [`MaxWeightExceeded`](Self::MaxWeightExceeded) fits better, and vice
+    /// versa. Either way the search was exhaustive: there is no solution.
     InsufficientFunds,
     /// Some selection covers the target value, but every one of them exceeds
     /// [`Target::max_weight`].

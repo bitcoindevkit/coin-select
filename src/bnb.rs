@@ -173,12 +173,15 @@ impl<'a, M: BnbMetric> BnbIter<'a, M> {
 
     /// The candidates to ban when excluding `index`, and the cursor to resume from.
     ///
-    /// For the exclusion branch, we keep banning candidates that have the same value and weight as
-    /// the one we exclude. Candidates are only compared until the first mismatch, since this
-    /// exploits them being adjacent in the sorted order.
+    /// For the exclusion branch, we keep banning candidates that are interchangeable with the one
+    /// we exclude: same value and weight, and dragging in exactly the same unconfirmed ancestors.
+    /// Two coins of equal value and weight are not interchangeable if one of them drags in an
+    /// ancestor that needs bumping. Candidates are only compared until the first mismatch, since
+    /// this exploits them being adjacent in the sorted order.
     fn exclusion_plan(&self, index: usize, cursor: usize) -> (Vec<usize>, usize) {
         let next = self.selector.candidate(index);
         let to_ban = (next.value, next.weight);
+        let to_ban_drags_in = self.selector.problem().drags_in(index);
         let mut banned = alloc::vec![index];
         let mut next_cursor = cursor + 1;
         for (next_index, next) in self.selector.candidates().skip(cursor + 1) {
@@ -187,7 +190,9 @@ impl<'a, M: BnbMetric> BnbIter<'a, M> {
                 next_cursor += 1;
                 continue;
             }
-            if (next.value, next.weight) != to_ban {
+            if (next.value, next.weight) != to_ban
+                || self.selector.problem().drags_in(next_index) != to_ban_drags_in
+            {
                 break;
             }
             // println!("banning: [{}] {:?}", next_index, next);

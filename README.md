@@ -173,6 +173,52 @@ println!("We are including a change output of {} value (0 means not change)", ch
 
 ```
 
+## Unconfirmed ancestors
+
+Use `SelectionProblem::new` when spending unconfirmed UTXOs. Supply every unconfirmed transaction
+that created an input and all of its transitive unconfirmed ancestors; missing transaction ids are
+treated as confirmed and can make the required CPFP fee too low. Parent lists contain direct parents
+only. Ancestors shared by several selected inputs are charged once over their union.
+
+```rust
+use bdk_coin_select::{
+    AncestorToBump, FeeRate, Input, SelectionProblem, Target, TargetFee, TargetOutputs,
+};
+
+let target = Target {
+    fee: TargetFee::from_feerate(FeeRate::from_sat_per_vb(5.0)),
+    outputs: TargetOutputs::fund_outputs([(136, 50_000)]),
+    max_weight: None,
+};
+let inputs = [Input {
+    value: 100_000,
+    weight: 272,
+    residing_txid: "child",
+}];
+let ancestors = [
+    AncestorToBump {
+        txid: "parent",
+        weight: 400,
+        fee: 100,
+        parents: vec![],
+    },
+    AncestorToBump {
+        txid: "child",
+        weight: 600,
+        fee: 200,
+        parents: vec!["parent"],
+    },
+];
+let problem = SelectionProblem::new(target, inputs, ancestors);
+let mut coin_selector = problem.selector();
+coin_selector.select(0);
+// 1000 wu of ancestors at 1.25 sat/wu owe 1250 sats, of which they already pay 300.
+assert_eq!(coin_selector.ancestor_bump(), 950);
+```
+
+Adding an input may drag in more fee debt than value, so funding is not necessarily monotone for
+ancestor-aware problems. `run_bnb` accounts for this and de-duplicates shared ancestors.
+
 # Minimum Supported Rust Version (MSRV)
 
 This library is compiles on rust v1.54 and above

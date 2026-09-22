@@ -1,7 +1,7 @@
 #![allow(clippy::zero_prefixed_literal)]
 
 use bdk_coin_select::{
-    Candidate, CoinSelector, Drain, DrainWeights, SelectionProblem, Target, TargetFee,
+    Candidate, CoinSelector, Drain, DrainWeights, FeeRate, SelectionProblem, Target, TargetFee,
     TargetOutputs,
 };
 use bitcoin::{consensus::Decodable, ScriptBuf, Transaction};
@@ -330,4 +330,42 @@ proptest! {
             prop_assert_eq!(cs.selected_value(), selected.iter().map(|c| c.value).sum::<u64>());
         }
     }
+}
+
+/// Pushing the input count past 252 grows its varint by 8 WU, so a candidate worth more than its own
+/// weight can still lower the excess. `is_fundable` must not reject a selection that is already
+/// funded just because adding every such candidate un-funds it.
+#[test]
+fn is_fundable_never_rejects_an_already_funded_selection() {
+    let target = Target {
+        fee: TargetFee::from_feerate(FeeRate::from_sat_per_vb(4.0)),
+        outputs: TargetOutputs {
+            value_sum: 1_000,
+            weight_sum: 0,
+            n_outputs: 0,
+        },
+        max_weight: None,
+    };
+    let candidates = [
+        Candidate {
+            value: 1_203,
+            weight: 158,
+            input_count: 252,
+        },
+        Candidate {
+            value: 21,
+            weight: 20,
+            input_count: 1,
+        },
+    ];
+    let problem = SelectionProblem::new_no_ancestors(target, candidates);
+    let mut selector = problem.selector();
+    selector.select(0);
+    assert!(selector.is_funded());
+    assert!(problem.candidate(1).effective_value(target.fee.rate) > 0.0);
+
+    let mut all = selector.clone();
+    all.select(1);
+    assert!(!all.is_funded(), "the input count varint un-funds it");
+    assert!(selector.is_fundable());
 }

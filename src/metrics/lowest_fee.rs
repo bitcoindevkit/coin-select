@@ -13,8 +13,22 @@ use crate::{float::Ordf32, BnbMetric, CoinSelector, Drain, DrainWeights, FeeRate
 ///
 /// Unlike other metrics, `LowestFee` decides for itself whether a selection should have a change
 /// output: change is added whenever doing so lowers the long-term fee (i.e. the recovered excess
-/// outweighs the future cost of spending the change) and the resulting change value is above the
-/// dust threshold implied by `dust_relay_feerate`.
+/// outweighs the future cost of spending the change), the resulting value is at least the dust
+/// threshold implied by `dust_relay_feerate`, and the transaction with change fits
+/// [`Target::max_weight`](crate::Target::max_weight).
+///
+/// # Unconfirmed ancestors
+///
+/// When the [`SelectionProblem`] has unconfirmed ancestors, the fee a selection must pay includes
+/// the [`CoinSelector::ancestor_bump`] of the ancestors it drags in, so the search naturally prefers
+/// coins that drag in nothing (or that share an already-paid-for ancestor). The score itself is
+/// still the child transaction's fee — the bump is inside it, not added on top.
+///
+/// The bound is much looser in that case (see [`bound`](BnbMetric::bound)): the tight bounds assume
+/// funding is monotone and that a candidate costs its own weight, neither of which survives shared
+/// or overpaying ancestors. Correctness is kept; the search just explores more.
+///
+/// [`SelectionProblem`]: crate::SelectionProblem
 #[derive(Clone, Copy)]
 pub struct LowestFee {
     /// The estimated feerate needed to spend our change output later.
@@ -68,6 +82,11 @@ impl LowestFee {
     /// inside [`bound`](BnbMetric::bound): deferring the changeless rejection only loosens the lower
     /// bound and never makes it inadmissible, and `score` reuses the returned drain for its cap
     /// check so the drain is decided once.
+    ///
+    /// The score is the *child* transaction's fee (plus the future cost of spending its change).
+    /// Any [`CoinSelector::ancestor_bump`] is not added on top: it is already inside the child's fee,
+    /// because covering it is what [`CoinSelector::is_funded`] demands and what the change
+    /// calculation gives up.
     fn fee_score(&self, cs: &CoinSelector<'_>) -> Option<(Ordf32, Drain)> {
         if !cs.is_funded() {
             return None;
@@ -114,8 +133,29 @@ impl BnbMetric for LowestFee {
         // solution in the subtree is this selection with no drain. If even that busts `max_weight`,
         // the whole subtree is infeasible -> prune. (Also keeps `fee_score(cs).unwrap()` below
         // sound: a value-met but over-cap node would otherwise score `None`.)
+        //
+        // Ancestor weight is *not* part of this: `max_weight` caps the child transaction only.
         if !cs.is_within_max_weight(DrainWeights::NONE) {
             return None;
+        }
+
+        // Everything below assumes funding is monotone and that a candidate's cost is its own
+        // weight — both false once unconfirmed ancestors are in play, where a candidate's marginal
+        // cost depends on which ancestors the selection already drags in:
+        //
+        // - A funded node's score is not a lower bound for its descendants: a descendant can drag
+        //   in an *overpaying* ancestor, which lowers the netted bump (see
+        //   `CoinSelector::ancestor_bump`) and so lowers the fee it must pay.
+        // - The unfunded relaxation below resizes the best value-per-weight candidate. With
+        //   ancestors, value-per-weight is not the true marginal funding efficiency (a candidate
+        //   sharing an already-paid-for ancestor is cheaper than its weight suggests), and its
+        //   `None` returns would claim infeasibility off the back of "select everything and it's
+        //   still unfunded", which no longer implies anything about subsets.
+        //
+        // So fall back to the fee floor: monotone in weight, ignores the (non-monotone) bump
+        // entirely, and never claims infeasibility. Loose, but admissible.
+        if cs.problem().has_ancestors() {
+            return Some(Ordf32(cs.fee_floor() as f32));
         }
 
         if cs.is_funded() {
