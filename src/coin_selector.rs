@@ -105,6 +105,12 @@ impl<'a> CoinSelector<'a> {
             .map(move |i| (*i, self.candidates[*i]))
     }
 
+    /// Map a position in the current candidate order to the candidate's original index (as used by
+    /// [`candidate`](Self::candidate), [`select`](Self::select) and [`ban`](Self::ban)).
+    pub(crate) fn order_pos_to_candidate_index(&self, order_pos: usize) -> usize {
+        self.candidate_order[order_pos]
+    }
+
     /// Get the candidate at `index`. `index` refers to its position in the original `candidates`
     /// slice passed into [`CoinSelector::new`].
     pub fn candidate(&self, index: usize) -> Candidate {
@@ -165,6 +171,10 @@ impl<'a> CoinSelector<'a> {
     /// [`unselected_indices`]: Self::unselected_indices
     pub fn ban(&mut self, index: usize) {
         self.banned.insert(index);
+    }
+
+    pub(crate) fn unban(&mut self, index: usize) {
+        self.banned.remove(index);
     }
 
     /// Gets the list of inputs that have been banned by [`ban`].
