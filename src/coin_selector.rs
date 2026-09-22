@@ -22,6 +22,11 @@ pub struct CoinSelector<'a> {
     selected: Bitset,
     banned: Bitset,
     candidate_order: Arc<Vec<usize>>,
+    /// Running sums over the selected candidates, kept up to date by [`select`](Self::select) and
+    /// [`deselect`](Self::deselect) so the aggregate queries don't rescan the selection.
+    selected_value: u64,
+    selected_weight: u64,
+    selected_input_count: usize,
 }
 
 impl<'a> CoinSelector<'a> {
@@ -46,6 +51,9 @@ impl<'a> CoinSelector<'a> {
             selected: Bitset::with_capacity(candidates.len()),
             banned: Bitset::with_capacity(candidates.len()),
             candidate_order: Arc::new((0..candidates.len()).collect::<Vec<_>>()),
+            selected_value: 0,
+            selected_weight: 0,
+            selected_input_count: 0,
         }
     }
 
@@ -106,7 +114,14 @@ impl<'a> CoinSelector<'a> {
     /// Deselect a candidate at `index`. `index` refers to its position in the original `candidates`
     /// slice passed into [`CoinSelector::new`].
     pub fn deselect(&mut self, index: usize) -> bool {
-        self.selected.remove(index)
+        let removed = self.selected.remove(index);
+        if removed {
+            let candidate = self.candidates[index];
+            self.selected_value -= candidate.value;
+            self.selected_weight -= candidate.weight;
+            self.selected_input_count -= candidate.input_count;
+        }
+        removed
     }
 
     /// Convienince method to pick elements of a slice by the indexes that are currently selected.
@@ -120,7 +135,14 @@ impl<'a> CoinSelector<'a> {
     /// slice passed into [`CoinSelector::new`].
     pub fn select(&mut self, index: usize) -> bool {
         assert!(index < self.candidates.len());
-        self.selected.insert(index)
+        let inserted = self.selected.insert(index);
+        if inserted {
+            let candidate = self.candidates[index];
+            self.selected_value += candidate.value;
+            self.selected_weight += candidate.weight;
+            self.selected_input_count += candidate.input_count;
+        }
+        inserted
     }
 
     /// Select the next unselected candidate in the sorted order fo the candidates.
@@ -188,18 +210,13 @@ impl<'a> CoinSelector<'a> {
     /// Inputs are priced as segwit, so each legacy input is overestimated by its 1 WU empty
     /// witness when no segwit input is selected (see [`Candidate::weight`]).
     pub fn input_weight(&self) -> u64 {
-        let input_count = self.selected().map(|(_, wv)| wv.input_count).sum::<usize>();
-        let input_varint_weight = varint_size(input_count) * 4;
-        let selected_weight: u64 = self.selected().map(|(_, wv)| wv.weight).sum();
-        input_varint_weight + selected_weight
+        let input_varint_weight = varint_size(self.selected_input_count) * 4;
+        input_varint_weight + self.selected_weight
     }
 
     /// Absolute value sum of all selected inputs.
     pub fn selected_value(&self) -> u64 {
-        self.selected
-            .iter()
-            .map(|index| self.candidates[index].value)
-            .sum()
+        self.selected_value
     }
 
     /// Current weight of transaction implied by the selection.
@@ -590,7 +607,7 @@ impl<'a> CoinSelector<'a> {
             {
                 continue;
             }
-            self.selected.insert(cand_index);
+            self.select(cand_index);
         }
     }
 
