@@ -4,6 +4,7 @@ use bdk_coin_select::{
     Candidate, CoinSelector, Drain, DrainWeights, Target, TargetFee, TargetOutputs,
 };
 use bitcoin::{consensus::Decodable, ScriptBuf, Transaction};
+use proptest::prelude::*;
 
 fn hex_val(c: u8) -> u8 {
     match c {
@@ -273,4 +274,53 @@ fn legacy_inputs_grouped_with_segwit_input() {
         coin_selector.weight(DrainWeights::NONE),
         tx.weight().to_wu()
     );
+}
+
+proptest! {
+    /// `CoinSelector` keeps running sums of the selected candidates. After any sequence of
+    /// selects and deselects they must match a recompute from the selected set.
+    #[test]
+    fn running_sums_match_recompute(
+        candidates in proptest::collection::vec(
+            (0u64..1_000_000, 0u64..2_000, 0usize..4).prop_map(
+                |(value, weight, input_count)| Candidate {
+                    value,
+                    weight,
+                    input_count,
+                },
+            ),
+            1..300,
+        ),
+        ops in proptest::collection::vec((any::<proptest::sample::Index>(), any::<bool>()), 0..600),
+    ) {
+        let mut cs = CoinSelector::new(
+            &candidates,
+            Target {
+                fee: TargetFee::ZERO,
+                outputs: TargetOutputs::fund_outputs([]),
+                max_weight: None,
+            },
+        );
+        for (index, select) in ops {
+            let index = index.index(candidates.len());
+            if select {
+                cs.select(index);
+            } else {
+                cs.deselect(index);
+            }
+
+            let selected = cs.selected().map(|(_, c)| c).collect::<Vec<_>>();
+            let input_count = selected.iter().map(|c| c.input_count).sum::<usize>();
+            let varint_size = match input_count {
+                0..=0xfc => 1,
+                0xfd..=0xffff => 3,
+                _ => 5,
+            };
+            let expected_weight =
+                varint_size * 4 + selected.iter().map(|c| c.weight).sum::<u64>();
+
+            prop_assert_eq!(cs.input_weight(), expected_weight);
+            prop_assert_eq!(cs.selected_value(), selected.iter().map(|c| c.value).sum::<u64>());
+        }
+    }
 }
