@@ -31,6 +31,9 @@ pub struct CoinSelector<'a> {
     /// Running sums over the unconfirmed ancestors the selection drags in. See
     /// [`ancestor_bump`](Self::ancestor_bump).
     ancestors: SelectionTotals,
+    /// Position in the candidate order before which every candidate is already decided — selected
+    /// or banned. See [`set_decided_before`](Self::set_decided_before).
+    decided_before: usize,
 }
 
 /// Running totals over the unconfirmed ancestors the selected candidates drag in, over the surplus
@@ -230,6 +233,7 @@ impl<'a> CoinSelector<'a> {
             selected_weight: 0,
             selected_input_count: 0,
             ancestors: SelectionTotals::new(problem),
+            decided_before: 0,
         }
     }
 
@@ -299,6 +303,40 @@ impl<'a> CoinSelector<'a> {
             .map(move |i| (*i, candidates[*i]))
     }
 
+    /// [`candidates`](Self::candidates), skipping the first `from_position` of the sorted order.
+    ///
+    /// `from_position` is a position in that order, not an index into
+    /// [`SelectionProblem::candidates`] — unlike the `index` each item carries. It may equal the
+    /// candidate count, which yields nothing; past that is a caller bug and panics.
+    pub(crate) fn candidates_from(
+        &self,
+        from_position: usize,
+    ) -> impl DoubleEndedIterator<Item = (usize, Candidate)> + ExactSizeIterator + '_ {
+        let cands = self.problem.candidates();
+        self.candidate_order[from_position..]
+            .iter()
+            .map(move |i| (*i, cands[*i]))
+    }
+
+    /// Promise that every candidate before `position` in the candidate order is already selected or
+    /// banned, so scans for undecided candidates may start there.
+    ///
+    /// Branch and bound decides candidates in order, so at depth `d` the first `d` positions are
+    /// all decided. Without this, every query for the undecided candidates walks those `d` entries
+    /// first, which makes the cost of a node grow with the pool rather than with the answer. Zero
+    /// is always correct and is where every selector starts; anything that can make an earlier
+    /// candidate undecided again ([`deselect`](Self::deselect), unbanning, re-sorting) puts it
+    /// back there.
+    pub(crate) fn set_decided_before(&mut self, position: usize) {
+        debug_assert!(
+            self.candidates()
+                .take(position)
+                .all(|(index, _)| self.selected.contains(index) || self.banned.contains(index)),
+            "an undecided candidate sits before `position`, so skipping the prefix would hide it",
+        );
+        self.decided_before = position;
+    }
+
     /// Get the candidate at `index`. `index` refers to its position in
     /// [`SelectionProblem::candidates`].
     pub fn candidate(&self, index: usize) -> Candidate {
@@ -308,6 +346,8 @@ impl<'a> CoinSelector<'a> {
     /// Deselect a candidate at `index`. `index` refers to its position in
     /// [`SelectionProblem::candidates`].
     pub fn deselect(&mut self, index: usize) -> bool {
+        // This can make a candidate before the decided prefix undecided again.
+        self.decided_before = 0;
         let removed = self.selected.remove(index);
         if removed {
             let candidate = self.problem.candidates()[index];
@@ -372,6 +412,7 @@ impl<'a> CoinSelector<'a> {
     }
 
     pub(crate) fn unban(&mut self, index: usize) {
+        self.decided_before = 0;
         if self.banned.remove(index) && !self.selected.contains(index) {
             self.ancestors.add_reachable(self.problem, index);
         }
@@ -781,6 +822,8 @@ impl<'a> CoinSelector<'a> {
     where
         F: FnMut((usize, Candidate), (usize, Candidate)) -> core::cmp::Ordering,
     {
+        // Positions change, so what was decided before one of them no longer means anything.
+        self.decided_before = 0;
         let candidates = self.problem.candidates();
         Arc::make_mut(&mut self.candidate_order)
             .sort_by(|a, b| cmp((*a, candidates[*a]), (*b, candidates[*b])))
@@ -889,8 +932,12 @@ impl<'a> CoinSelector<'a> {
     /// This excludes candidates that have been selected or [`banned`].
     ///
     /// [`banned`]: Self::ban
+    ///
+    /// Branch and bound tells the selector how much of the candidate order it has already decided,
+    /// and this starts past that prefix. Those candidates are selected or banned either way, so the
+    /// answer is the same.
     pub fn unselected_indices(&self) -> impl DoubleEndedIterator<Item = usize> + '_ {
-        self.candidate_order
+        self.candidate_order[self.decided_before..]
             .iter()
             .copied()
             .filter(move |&index| !(self.selected.contains(index) || self.banned.contains(index)))

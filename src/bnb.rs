@@ -52,7 +52,7 @@ impl<'a, M: BnbMetric> Iterator for BnbIter<'a, M> {
 
         // {
         //     println!("=========================== {:?}", self.best);
-        //     println!("{} {:?}", &self.selector, self.metric.bound(&self.selector));
+        //     println!("{} {:?}", &self.selector, self.bound_of_current(self.cursor()));
         //     for frame in self.stack.iter() {
         //         println!(
         //             "\t{} [{}] cursor={} sibling_pending={}",
@@ -98,7 +98,7 @@ impl<'a, M: BnbMetric> BnbIter<'a, M> {
 
         iter.seed_greedy_incumbent();
 
-        if !iter.bound_is_promising() {
+        if !iter.bound_is_promising(0) {
             iter.exhausted = true;
         }
 
@@ -130,6 +130,8 @@ impl<'a, M: BnbMetric> BnbIter<'a, M> {
     }
 
     fn try_record_best(&mut self) -> Option<Ordf32> {
+        let decided_before = self.cursor();
+        self.selector.set_decided_before(decided_before);
         let score = self.metric.score(&self.selector)?;
         let better = match self.best {
             Some(best_score) => score < best_score,
@@ -151,8 +153,19 @@ impl<'a, M: BnbMetric> BnbIter<'a, M> {
         }
     }
 
-    fn bound_is_promising(&mut self) -> bool {
-        let bound = self.metric.bound(&self.selector);
+    /// Bound the current node, telling the selector how much of the candidate order it can skip.
+    ///
+    /// Every candidate before `decided_before` has already been decided — included by an inclusion
+    /// frame, or banned by an exclusion one — so a metric asking about undecided candidates never
+    /// has to look at them. That is what keeps the cost of a node proportional to the answer rather
+    /// than to the depth it was found at.
+    fn bound_of_current(&mut self, decided_before: usize) -> Option<Ordf32> {
+        self.selector.set_decided_before(decided_before);
+        self.metric.bound(&self.selector)
+    }
+
+    fn bound_is_promising(&mut self, decided_before: usize) -> bool {
+        let bound = self.bound_of_current(decided_before);
         self.is_promising(bound)
     }
 
@@ -163,7 +176,7 @@ impl<'a, M: BnbMetric> BnbIter<'a, M> {
     /// The first undecided candidate at or after `start` in the candidate order, as
     /// `(index, cursor)`.
     fn next_candidate(&self, start: usize) -> Option<(usize, usize)> {
-        for (cursor, (index, _)) in (start..).zip(self.selector.candidates().skip(start)) {
+        for (cursor, (index, _)) in (start..).zip(self.selector.candidates_from(start)) {
             if !self.selector.is_selected(index) && !self.selector.banned().contains(index) {
                 return Some((index, cursor));
             }
@@ -184,7 +197,7 @@ impl<'a, M: BnbMetric> BnbIter<'a, M> {
         let to_ban_drags_in = self.selector.problem().drags_in(index);
         let mut banned = alloc::vec![index];
         let mut next_cursor = cursor + 1;
-        for (next_index, next) in self.selector.candidates().skip(cursor + 1) {
+        for (next_index, next) in self.selector.candidates_from(cursor + 1) {
             if self.selector.is_selected(next_index) || self.selector.banned().contains(next_index)
             {
                 next_cursor += 1;
@@ -254,13 +267,13 @@ impl<'a, M: BnbMetric> BnbIter<'a, M> {
         };
 
         self.selector.select(index);
-        let inc_bound = self.metric.bound(&self.selector);
+        let inc_bound = self.bound_of_current(cursor + 1);
         let inc_ok = self.is_promising(inc_bound);
         self.selector.deselect(index);
 
         let (banned, exc_next_cursor) = self.exclusion_plan(index, cursor);
         self.apply_exclude(&banned);
-        let exc_bound = self.metric.bound(&self.selector);
+        let exc_bound = self.bound_of_current(exc_next_cursor);
         let exc_ok = self.is_promising(exc_bound);
         self.undo_exclude(&banned);
 
@@ -319,7 +332,7 @@ impl<'a, M: BnbMetric> BnbIter<'a, M> {
                 if frame.sibling_pending {
                     let (banned, next_cursor) = self.exclusion_plan(frame.index, frame.cursor);
                     self.apply_exclude(&banned);
-                    if self.bound_is_promising() {
+                    if self.bound_is_promising(next_cursor) {
                         self.stack.push(Frame {
                             is_inclusion: false,
                             index: frame.index,
@@ -336,7 +349,7 @@ impl<'a, M: BnbMetric> BnbIter<'a, M> {
                 self.undo_exclude(&frame.banned);
                 if frame.sibling_pending {
                     self.selector.select(frame.index);
-                    if self.bound_is_promising() {
+                    if self.bound_is_promising(frame.cursor + 1) {
                         self.stack.push(Frame {
                             is_inclusion: true,
                             index: frame.index,
