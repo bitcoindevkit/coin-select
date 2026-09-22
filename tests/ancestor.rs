@@ -774,6 +774,80 @@ fn bump_lower_bound_credits_shared_surplus_on_its_own() {
     );
 }
 
+/// The lookahead prune leaves out candidates whose standalone effective value is negative, on the
+/// grounds that they can only lower what is still reachable. With ancestors that is not the whole
+/// story: such a candidate can *fund* a selection by dragging in an ancestor that overpays, which
+/// lowers the bump the rest of the selection owes. The prune credits that through the bump's
+/// branch-wide floor, so it must not cut this branch off.
+///
+/// The greedy seed funds the target with the cheap clean coin, so it cannot stand in for the search
+/// here: the optimum is reachable only down the branch that excludes that coin, which is exactly
+/// the node whose only remaining candidate is one the lookahead does not count.
+#[test]
+fn lookahead_keeps_a_branch_funded_only_by_a_subsidizing_ancestor() {
+    let t = target(10.0, 90_000); // 2.5 sat/wu
+    let problem = SelectionProblem::new(
+        t,
+        [
+            // Pays for itself, but not enough to cover the target and its own ancestor's bump.
+            input(100_000, "POOR"),
+            // Costs far more weight than it is worth, so the lookahead ignores its value — but it
+            // drags in an ancestor paying 50_000 sats over the rate, which is worth more than the
+            // 5_000 sats of fee its own weight costs.
+            Input {
+                value: 100,
+                weight: 2_000,
+                residing_txid: "RICH",
+            },
+            // Enough to fund the target alongside the first coin, but at a worse fee than paying
+            // the bump off with RICH's surplus.
+            input(10_000, CONFIRMED),
+        ],
+        [
+            ancestor("POOR", 4_000, 0, vec![]),    // owes 10_000
+            ancestor("RICH", 400, 51_000, vec![]), // overpays by 50_000
+        ],
+    );
+
+    let mut poor_only = problem.selector();
+    poor_only.select(0);
+    assert!(
+        !poor_only.is_funded(),
+        "the bump on POOR leaves it short of the target"
+    );
+    assert!(
+        problem.candidate(1).effective_value(t.fee.rate) < 0.0,
+        "the subsidizing coin's own value never covers its weight"
+    );
+
+    // The search sorts by descending value per weight before seeding, so seed from that order.
+    let mut greedy = problem.selector();
+    greedy.sort_candidates_by_descending_value_pwu();
+    greedy
+        .select_until_target_met()
+        .expect("the clean coin funds it");
+    assert!(
+        greedy.is_selected(2) && !greedy.is_selected(1),
+        "the seed takes the clean coin, so the search has to find the rest: {}",
+        greedy
+    );
+
+    let mut exhaustive = problem.selector();
+    let (best_score, _) =
+        common::exhaustive_search(&mut exhaustive, &mut metric()).expect("solvable");
+    assert!(
+        exhaustive.is_selected(0) && exhaustive.is_selected(1) && !exhaustive.is_selected(2),
+        "the optimum pays the bump off with RICH's surplus: {}",
+        exhaustive
+    );
+
+    let mut cs = problem.selector();
+    let (score, _) = cs
+        .run_bnb(metric(), 100_000)
+        .expect("the optimum must not be pruned");
+    assert_eq!(score, best_score, "bnb settled for {}", cs);
+}
+
 // --- randomized cross-checks ---
 
 /// Spec for a randomly generated ancestor problem. Indices are taken modulo the relevant length so

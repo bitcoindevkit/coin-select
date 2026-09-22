@@ -30,16 +30,17 @@ pub struct CoinSelector<'a> {
     selected_input_count: usize,
     /// Running sums over the unconfirmed ancestors the selection drags in. See
     /// [`ancestor_bump`](Self::ancestor_bump).
-    ancestors: AncestorTotals,
+    ancestors: SelectionTotals,
 }
 
-/// Running totals over the unconfirmed ancestors the selected candidates drag in, and over the
-/// surplus the reachable ones (neither selected nor banned) could still bring.
+/// Running totals over the unconfirmed ancestors the selected candidates drag in, over the surplus
+/// the reachable ones (neither selected nor banned) could still bring, and over what those
+/// reachable candidates are worth.
 ///
 /// [`CoinSelector`] decides *when* a candidate's ancestors arrive or leave (when its selected or
 /// banned bit actually changes); the bookkeeping for *what* that changes lives here.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct AncestorTotals {
+struct SelectionTotals {
     /// `(weight, fee)` of the selected candidates' private ancestors. Each is reachable through one
     /// candidate only, so a plain sum never counts one twice.
     private: (u64, u64),
@@ -57,9 +58,14 @@ struct AncestorTotals {
     /// Summed [`SelectionProblem::ancestor_surplus`] of the shared ancestors that some reachable
     /// candidate drags in and no selected candidate does yet.
     reachable_shared_surplus: u64,
+    /// Value and weight of the reachable candidates worth selecting, i.e. those whose standalone
+    /// effective value is positive. Candidates that cost more weight than they bring are left out
+    /// because they only ever lower the total, so this stays an upper bound on what the rest of
+    /// this branch can still contribute.
+    undecided: (u64, u64),
 }
 
-impl AncestorTotals {
+impl SelectionTotals {
     fn new(problem: &SelectionProblem) -> Self {
         let shared_len = if problem.has_shared_ancestors() {
             problem.ancestors().len()
@@ -73,12 +79,11 @@ impl AncestorTotals {
             reachable_private_surplus: 0,
             reachable_shared_refcounts: alloc::vec![0; shared_len],
             reachable_shared_surplus: 0,
+            undecided: (0, 0),
         };
         // Nothing is selected or banned yet, so every candidate is reachable.
-        if problem.has_ancestors() {
-            for index in 0..problem.len() {
-                totals.add_reachable(problem, index);
-            }
+        for index in 0..problem.len() {
+            totals.add_reachable(problem, index);
         }
         totals
     }
@@ -145,8 +150,23 @@ impl AncestorTotals {
         }
     }
 
+    /// Whether a candidate brings in more value than its own weight costs at the target feerate.
+    /// One that doesn't can only ever lower a running total, so [`undecided`](Self::undecided)
+    /// leaves it out and stays an upper bound.
+    fn is_worth_selecting(problem: &SelectionProblem, index: usize) -> bool {
+        problem
+            .candidate(index)
+            .effective_value(problem.target().fee.rate)
+            > 0.0
+    }
+
     /// Candidate `index` became reachable (neither selected nor banned).
     fn add_reachable(&mut self, problem: &SelectionProblem, index: usize) {
+        if Self::is_worth_selecting(problem, index) {
+            let candidate = problem.candidate(index);
+            self.undecided.0 += candidate.value;
+            self.undecided.1 += candidate.weight;
+        }
         if problem.has_private_ancestors() {
             self.reachable_private_surplus +=
                 problem.ancestor_surplus(problem.private_ancestors(index));
@@ -166,6 +186,11 @@ impl AncestorTotals {
 
     /// Candidate `index` stopped being reachable (it was selected or banned).
     fn remove_reachable(&mut self, problem: &SelectionProblem, index: usize) {
+        if Self::is_worth_selecting(problem, index) {
+            let candidate = problem.candidate(index);
+            self.undecided.0 -= candidate.value;
+            self.undecided.1 -= candidate.weight;
+        }
         if problem.has_private_ancestors() {
             self.reachable_private_surplus -=
                 problem.ancestor_surplus(problem.private_ancestors(index));
@@ -204,7 +229,7 @@ impl<'a> CoinSelector<'a> {
             selected_value: 0,
             selected_weight: 0,
             selected_input_count: 0,
-            ancestors: AncestorTotals::new(problem),
+            ancestors: SelectionTotals::new(problem),
         }
     }
 
@@ -524,6 +549,30 @@ impl<'a> CoinSelector<'a> {
             // Truncating a positive float rounds down, which is the safe direction.
             bound as u64
         }
+    }
+
+    /// The most any descendant of this branch could still improve the feerate constraint.
+    ///
+    /// This is Bitcoin Core's `SelectCoinsBnB` lookahead (`curr_available_value`): the selector
+    /// keeps a running total of what the reachable candidates can contribute, and a node whose
+    /// total still cannot close the gap has an empty subtree. Constant time.
+    ///
+    /// Every term is one-sided, so the result is an over-estimate and never prunes a branch that
+    /// holds a solution. The undecided pair counts only candidates worth selecting, and the current
+    /// ancestor bump is swapped for [`ancestor_bump_lower_bound`](Self::ancestor_bump_lower_bound),
+    /// which holds for this branch and every descendant — so a subsidizing ancestor that a
+    /// descendant might drag in is credited here rather than assumed away. The input-count varint
+    /// and witness overhead those candidates would add is ignored for the same reason: leaving it
+    /// out can only make this larger.
+    pub(crate) fn best_reachable_rate_excess_wu(&self) -> i64 {
+        self.rate_excess_wu(Drain::NONE) + self.ancestor_bump() as i64
+            - self.ancestor_bump_lower_bound() as i64
+            + self.ancestors.undecided.0 as i64
+            - self
+                .target()
+                .fee
+                .rate
+                .implied_fee_wu(self.ancestors.undecided.1) as i64
     }
 
     /// Current weight of transaction implied by the selection.
