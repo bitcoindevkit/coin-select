@@ -167,6 +167,10 @@ impl<'a> CoinSelector<'a> {
         self.banned.insert(index);
     }
 
+    pub(crate) fn unban(&mut self, index: usize) {
+        self.banned.remove(index);
+    }
+
     /// Gets the list of inputs that have been banned by [`ban`].
     ///
     /// [`ban`]: Self::ban
