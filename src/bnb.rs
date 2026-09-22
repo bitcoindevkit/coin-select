@@ -13,6 +13,10 @@ pub(crate) struct BnbIter<'a, M: BnbMetric> {
     selector: CoinSelector<'a>,
     stack: Vec<Frame>,
     best: Option<Ordf32>,
+    /// The greedy selection, yielded before the first node is expanded. Its score is `best`:
+    /// nothing else can have run yet, so the two are set together. See
+    /// [`seed_greedy_incumbent`](BnbIter::seed_greedy_incumbent).
+    seed: Option<CoinSelector<'a>>,
     exhausted: bool,
     /// The `BnBMetric` that will score each selection
     pub(crate) metric: M,
@@ -37,6 +41,11 @@ impl<'a, M: BnbMetric> Iterator for BnbIter<'a, M> {
     type Item = Option<(CoinSelector<'a>, Ordf32)>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if let Some(seed) = self.seed.take() {
+            let score = self.best.expect("the seed and `best` are set together");
+            return Some(Some((seed, score)));
+        }
+
         if self.exhausted {
             return None;
         }
@@ -82,15 +91,38 @@ impl<'a, M: BnbMetric> BnbIter<'a, M> {
             selector,
             stack: Vec::new(),
             best: None,
+            seed: None,
             exhausted: false,
             metric,
         };
+
+        iter.seed_greedy_incumbent();
 
         if !iter.bound_is_promising() {
             iter.exhausted = true;
         }
 
         iter
+    }
+
+    /// Score the greedy prefix and adopt it as the incumbent.
+    ///
+    /// Without this the search is not anytime: a caller that runs out of rounds before the first
+    /// complete selection gets nothing back and falls through to whatever fallback it has, which on
+    /// a large pool is far worse than the selection a single greedy pass would have handed it. The
+    /// seed costs one round and one scored selection, and since it is only an incumbent — the bound
+    /// is unchanged and still admissible — the optimum stays reachable.
+    ///
+    /// It yields nothing for a metric that rejects the greedy prefix outright.
+    fn seed_greedy_incumbent(&mut self) {
+        let mut seed = self.selector.clone();
+        if seed.select_until_target_met().is_err() {
+            return;
+        }
+        if let Some(score) = self.metric.score(&seed) {
+            self.best = Some(score);
+            self.seed = Some(seed);
+        }
     }
 
     fn is_exclusion_node(&self) -> bool {
