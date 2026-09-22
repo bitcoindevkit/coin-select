@@ -24,9 +24,11 @@ use crate::{float::Ordf32, BnbMetric, CoinSelector, Drain, DrainWeights, FeeRate
 /// coins that drag in nothing (or that share an already-paid-for ancestor). The score itself is
 /// still the child transaction's fee — the bump is inside it, not added on top.
 ///
-/// The bound is much looser in that case (see [`bound`](BnbMetric::bound)): the tight bounds assume
-/// funding is monotone and that a candidate costs its own weight, neither of which survives shared
-/// or overpaying ancestors. Correctness is kept; the search just explores more.
+/// The bound uses a child-weight relaxation when ancestors are present (see
+/// [`bound`](BnbMetric::bound)): a funded node credits reachable ancestor surplus and possible future
+/// change, clamped to the monotone fee floor, while an unfunded one estimates the least child weight
+/// needed to meet each fee constraint. The `None` prunes stay off: funding is not monotone, so
+/// "select everything and it is still unfunded" does not mean the subtree is empty.
 ///
 /// [`SelectionProblem`]: crate::SelectionProblem
 #[derive(Clone, Copy)]
@@ -109,6 +111,147 @@ impl LowestFee {
     }
 }
 
+impl LowestFee {
+    /// Whether a descendant of `cs` could still add both a change output and at least one more
+    /// input under `max_weight`.
+    fn change_is_reachable(&self, cs: &CoinSelector<'_>) -> bool {
+        match cs.target().max_weight {
+            None => true,
+            Some(max_weight) => cs.min_input_weight().map_or(false, |min_input_weight| {
+                cs.weight(self.drain_weights) + min_input_weight <= max_weight
+            }),
+        }
+    }
+
+    /// The best exact value per weight among the undecided candidates, and whether any undecided
+    /// candidate carries value at zero weight.
+    ///
+    /// Relies on the descending value-per-weight order this metric requires. That order is keyed on
+    /// `f32`, so two exact ratios can tie there and sit either way round: the exact maximum can only
+    /// lie in the run sharing the first undecided candidate's `f32` key, so only that run is scanned
+    /// instead of every undecided candidate. Weightless candidates sort to the front (a value over
+    /// zero weight is infinite), so they are met before the run.
+    fn best_undecided_value_pwu(cs: &CoinSelector<'_>) -> (f64, bool) {
+        let mut best = 0.0_f64;
+        let mut weightless_value = false;
+        let mut key = None;
+        for (_, candidate) in cs.unselected() {
+            if candidate.weight == 0 {
+                if candidate.value > 0 {
+                    weightless_value = true;
+                    break;
+                }
+                continue;
+            }
+            let candidate_key = Ordf32(candidate.value_pwu());
+            match key {
+                None => key = Some(candidate_key),
+                Some(first) if candidate_key != first => break,
+                _ => {}
+            }
+            best = best.max(candidate.value as f64 / candidate.weight as f64);
+        }
+        debug_assert!(
+            weightless_value
+                || best
+                    == cs
+                        .unselected()
+                        .filter(|(_, c)| c.weight > 0)
+                        .map(|(_, c)| c.value as f64 / c.weight as f64)
+                        .fold(0.0_f64, f64::max),
+            "candidates are not in descending value-per-weight order, so the tie-run scan is wrong"
+        );
+        (best, weightless_value)
+    }
+
+    /// Tighter than [`CoinSelector::fee_floor`] once the value shortfall proves that every funded
+    /// descendant must add some child input weight.
+    ///
+    /// Never returns `None`: a fat private deficit can un-fund a prefix that a subset would have
+    /// funded, so infeasibility is not something this path is allowed to claim. (The caller has
+    /// already hard-pruned on child `max_weight`, which is monotone.)
+    ///
+    /// The three fee constraints get independent fractional relaxations. Their maximum is still a
+    /// lower bound on the real added child weight. Candidate ancestry is ignored and the global bump
+    /// floor is used instead, avoiding package-surplus double counting. Flooring the fractional
+    /// weight keeps floating-point error in the safe direction.
+    fn bound_with_ancestors(&self, cs: &CoinSelector<'_>) -> Ordf32 {
+        if cs.is_funded() {
+            let (_, drain) = self.fee_score(cs).unwrap();
+            let current_score =
+                cs.fee(drain.value) as u64 + drain.weights.spend_fee(self.long_term_feerate);
+            let surplus = cs
+                .ancestor_bump()
+                .saturating_sub(cs.ancestor_bump_lower_bound());
+            let mut bound = current_score.saturating_sub(surplus);
+            if drain.is_none() {
+                let cost_of_adding_change = self.drain_weights.waste(
+                    cs.target().fee.rate,
+                    self.long_term_feerate,
+                    cs.target().outputs.n_outputs,
+                );
+                // Subtract the large integer terms before converting anything to float. Casting the
+                // non-negative waste to u64 floors it, keeping the bound conservative.
+                let with_change = current_score
+                    .saturating_sub(surplus)
+                    .saturating_sub(cs.excess(Drain::NONE) as u64)
+                    .saturating_add(cost_of_adding_change as u64);
+                if self.change_is_reachable(cs) {
+                    bound = bound.min(with_change);
+                }
+            }
+            return Ordf32(bound.max(cs.fee_floor()) as f32);
+        }
+
+        let target = cs.target();
+        let bump = cs.ancestor_bump_lower_bound();
+        let current_weight = cs.weight(DrainWeights::NONE);
+        let selected_value = cs.selected_value() as f64;
+        let value_target = target.value() as f64;
+        let target_rate = target.fee.rate.spwu() as f64;
+        let rate_deficit = (value_target + target_rate * current_weight as f64 + bump as f64
+            - selected_value)
+            .max(0.0);
+        let absolute_deficit =
+            (value_target + target.fee.absolute as f64 - selected_value).max(0.0);
+        let (replace_deficit, replace_rate) = target.fee.replace.map_or((0.0, 0.0), |replace| {
+            let rate = replace.incremental_relay_feerate.spwu() as f64;
+            (
+                (value_target + replace.fee as f64 + rate * current_weight as f64 - selected_value)
+                    .max(0.0),
+                rate,
+            )
+        });
+
+        let (best_value, weightless_value) = Self::best_undecided_value_pwu(cs);
+        let best_rate_gain = (best_value - target_rate).max(0.0);
+        let best_replace_gain = (best_value - replace_rate).max(0.0);
+
+        // Treat the best candidate as unlimited fractional input. If no positive gain is available,
+        // or a positive-value zero-weight candidate exists, fall back to zero added weight rather
+        // than claiming infeasibility.
+        let weight_for = |deficit: f64, gain_pwu: f64| match (deficit, gain_pwu) {
+            (deficit, gain) if !weightless_value && deficit > 0.0 && gain > 0.0 => deficit / gain,
+            _ => 0.0,
+        };
+        let added_weight = weight_for(rate_deficit, best_rate_gain)
+            .max(weight_for(absolute_deficit, best_value))
+            .max(weight_for(replace_deficit, best_replace_gain));
+
+        // `added_weight` is non-negative, so conversion to u64 truncates (floors) it.
+        let added_weight = added_weight as u64;
+        let weight = match current_weight.checked_add(added_weight) {
+            Some(weight) if added_weight != u64::MAX => weight,
+            _ => return Ordf32(cs.fee_floor() as f32),
+        };
+        let mut bound = (target.fee.rate.implied_fee_wu(weight) + bump).max(target.fee.absolute);
+        if let Some(replace) = target.fee.replace {
+            bound = bound.max(replace.min_fee_to_do_replacement_wu(weight));
+        }
+        Ordf32(bound as f32)
+    }
+}
+
 impl BnbMetric for LowestFee {
     fn drain(&mut self, cs: &CoinSelector<'_>) -> Drain {
         self.drain_value(cs).map_or(Drain::NONE, |value| Drain {
@@ -139,23 +282,10 @@ impl BnbMetric for LowestFee {
             return None;
         }
 
-        // Everything below assumes funding is monotone and that a candidate's cost is its own
-        // weight — both false once unconfirmed ancestors are in play, where a candidate's marginal
-        // cost depends on which ancestors the selection already drags in:
-        //
-        // - A funded node's score is not a lower bound for its descendants: a descendant can drag
-        //   in an *overpaying* ancestor, which lowers the netted bump (see
-        //   `CoinSelector::ancestor_bump`) and so lowers the fee it must pay.
-        // - The unfunded relaxation below resizes the best value-per-weight candidate. With
-        //   ancestors, value-per-weight is not the true marginal funding efficiency (a candidate
-        //   sharing an already-paid-for ancestor is cheaper than its weight suggests), and its
-        //   `None` returns would claim infeasibility off the back of "select everything and it's
-        //   still unfunded", which no longer implies anything about subsets.
-        //
-        // So fall back to the fee floor: monotone in weight, ignores the (non-monotone) bump
-        // entirely, and never claims infeasibility. Loose, but admissible.
+        // With unconfirmed ancestors, funding is not monotone. Use the child-weight relaxation in
+        // `bound_with_ancestors`; never claim the subtree is empty.
         if cs.problem().has_ancestors() {
-            return Some(Ordf32(cs.fee_floor() as f32));
+            return Some(self.bound_with_ancestors(cs));
         }
 
         if cs.is_funded() {
@@ -199,13 +329,7 @@ impl BnbMetric for LowestFee {
                 // of which only make the tx heavier. If there's no room for both under the cap the
                 // improvement is unreachable down this branch, so don't credit it — keep
                 // `current_score` (a tighter, still-admissible bound).
-                let change_is_reachable = match cs.target().max_weight {
-                    None => true,
-                    Some(max_weight) => cs.min_input_weight().map_or(false, |min_input_weight| {
-                        cs.weight(self.drain_weights) + min_input_weight <= max_weight
-                    }),
-                };
-                if change_is_reachable && best_score_with_change < current_score {
+                if self.change_is_reachable(cs) && best_score_with_change < current_score {
                     return Some(best_score_with_change);
                 }
             }

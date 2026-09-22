@@ -393,6 +393,27 @@ impl SelectionProblem {
         self.has_shared_ancestors
     }
 
+    /// How much a group of ancestors with summed `(weight, fee)` pays above the target rate, in
+    /// whole satoshis rounded up, or 0 if it pays at or below it.
+    ///
+    /// Rounded up so that crediting it can only lower a lower bound. Computed the same way every
+    /// time, so a running total that adds and later subtracts it returns exactly to where it was.
+    pub(crate) fn ancestor_surplus(&self, (weight, fee): (u64, u64)) -> u64 {
+        let surplus = fee as f64 - weight as f64 * self.target.fee.rate.spwu() as f64;
+        if surplus <= 0.0 {
+            0
+        } else {
+            // Round up without `f64::ceil`, which `no_std` lacks. Truncating a positive float
+            // rounds down, so add one whenever that dropped a fraction.
+            let truncated = surplus as u64;
+            if (truncated as f64) < surplus {
+                truncated.saturating_add(1)
+            } else {
+                truncated
+            }
+        }
+    }
+
     /// The fee still owed so the ancestors only this candidate would drag in meet
     /// [`Target::fee`](crate::TargetFee)'s rate, as if it were the only selected candidate.
     ///

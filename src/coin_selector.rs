@@ -33,11 +33,12 @@ pub struct CoinSelector<'a> {
     ancestors: AncestorTotals,
 }
 
-/// Running totals over the unconfirmed ancestors the selected candidates drag in.
+/// Running totals over the unconfirmed ancestors the selected candidates drag in, and over the
+/// surplus the reachable ones (neither selected nor banned) could still bring.
 ///
-/// [`CoinSelector`] decides *when* a candidate's ancestors arrive or leave (when its selected bit
-/// actually changes); the bookkeeping for *what* that changes lives here.
-#[derive(Debug, Clone)]
+/// [`CoinSelector`] decides *when* a candidate's ancestors arrive or leave (when its selected or
+/// banned bit actually changes); the bookkeeping for *what* that changes lives here.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct AncestorTotals {
     /// `(weight, fee)` of the selected candidates' private ancestors. Each is reachable through one
     /// candidate only, so a plain sum never counts one twice.
@@ -47,6 +48,15 @@ struct AncestorTotals {
     shared_refcounts: Vec<u32>,
     /// `(weight, fee)` of the shared ancestors with a non-zero refcount, each counted once.
     shared: (u64, u64),
+    /// Summed [`SelectionProblem::ancestor_surplus`] of the private ancestors of every reachable
+    /// candidate, each candidate's group netted as one.
+    reachable_private_surplus: u64,
+    /// How many reachable candidates drag in each shared ancestor. Empty unless the problem has
+    /// shared ancestors.
+    reachable_shared_refcounts: Vec<u32>,
+    /// Summed [`SelectionProblem::ancestor_surplus`] of the shared ancestors that some reachable
+    /// candidate drags in and no selected candidate does yet.
+    reachable_shared_surplus: u64,
 }
 
 impl AncestorTotals {
@@ -56,11 +66,26 @@ impl AncestorTotals {
         } else {
             0
         };
-        Self {
+        let mut totals = Self {
             private: (0, 0),
             shared_refcounts: alloc::vec![0; shared_len],
             shared: (0, 0),
+            reachable_private_surplus: 0,
+            reachable_shared_refcounts: alloc::vec![0; shared_len],
+            reachable_shared_surplus: 0,
+        };
+        // Nothing is selected or banned yet, so every candidate is reachable.
+        if problem.has_ancestors() {
+            for index in 0..problem.len() {
+                totals.add_reachable(problem, index);
+            }
         }
+        totals
+    }
+
+    /// Summed surplus of the ancestors reachable candidates could still bring in.
+    fn reachable_surplus(&self) -> u64 {
+        self.reachable_private_surplus + self.reachable_shared_surplus
     }
 
     /// Summed `(weight, fee)` of every ancestor the selection drags in, each counted once.
@@ -86,6 +111,10 @@ impl AncestorTotals {
                     let (weight, fee) = problem.ancestors()[anc_index];
                     self.shared.0 += weight;
                     self.shared.1 += fee;
+                    // Now selected, so no longer something a descendant could still add.
+                    if self.reachable_shared_refcounts[anc_index] > 0 {
+                        self.reachable_shared_surplus -= problem.ancestor_surplus((weight, fee));
+                    }
                 }
                 *refcount += 1;
             }
@@ -108,6 +137,47 @@ impl AncestorTotals {
                     let (weight, fee) = problem.ancestors()[anc_index];
                     self.shared.0 -= weight;
                     self.shared.1 -= fee;
+                    if self.reachable_shared_refcounts[anc_index] > 0 {
+                        self.reachable_shared_surplus += problem.ancestor_surplus((weight, fee));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Candidate `index` became reachable (neither selected nor banned).
+    fn add_reachable(&mut self, problem: &SelectionProblem, index: usize) {
+        if problem.has_private_ancestors() {
+            self.reachable_private_surplus +=
+                problem.ancestor_surplus(problem.private_ancestors(index));
+        }
+        if problem.has_shared_ancestors() {
+            for &anc_index in problem.shared_drags_in(index) {
+                let anc_index = anc_index as usize;
+                let refcount = &mut self.reachable_shared_refcounts[anc_index];
+                if *refcount == 0 && self.shared_refcounts[anc_index] == 0 {
+                    self.reachable_shared_surplus +=
+                        problem.ancestor_surplus(problem.ancestors()[anc_index]);
+                }
+                *refcount += 1;
+            }
+        }
+    }
+
+    /// Candidate `index` stopped being reachable (it was selected or banned).
+    fn remove_reachable(&mut self, problem: &SelectionProblem, index: usize) {
+        if problem.has_private_ancestors() {
+            self.reachable_private_surplus -=
+                problem.ancestor_surplus(problem.private_ancestors(index));
+        }
+        if problem.has_shared_ancestors() {
+            for &anc_index in problem.shared_drags_in(index) {
+                let anc_index = anc_index as usize;
+                let refcount = &mut self.reachable_shared_refcounts[anc_index];
+                *refcount -= 1;
+                if *refcount == 0 && self.shared_refcounts[anc_index] == 0 {
+                    self.reachable_shared_surplus -=
+                        problem.ancestor_surplus(problem.ancestors()[anc_index]);
                 }
             }
         }
@@ -220,6 +290,9 @@ impl<'a> CoinSelector<'a> {
             self.selected_weight -= candidate.weight;
             self.selected_input_count -= candidate.input_count;
             self.ancestors.sub_selected(self.problem, index);
+            if !self.banned.contains(index) {
+                self.ancestors.add_reachable(self.problem, index);
+            }
         }
         removed
     }
@@ -241,6 +314,9 @@ impl<'a> CoinSelector<'a> {
             self.selected_value += candidate.value;
             self.selected_weight += candidate.weight;
             self.selected_input_count += candidate.input_count;
+            if !self.banned.contains(index) {
+                self.ancestors.remove_reachable(self.problem, index);
+            }
             self.ancestors.add_selected(self.problem, index);
         }
         inserted
@@ -265,11 +341,15 @@ impl<'a> CoinSelector<'a> {
     /// [`unselected`]: Self::unselected
     /// [`unselected_indices`]: Self::unselected_indices
     pub fn ban(&mut self, index: usize) {
-        self.banned.insert(index);
+        if self.banned.insert(index) && !self.selected.contains(index) {
+            self.ancestors.remove_reachable(self.problem, index);
+        }
     }
 
     pub(crate) fn unban(&mut self, index: usize) {
-        self.banned.remove(index);
+        if self.banned.remove(index) && !self.selected.contains(index) {
+            self.ancestors.add_reachable(self.problem, index);
+        }
     }
 
     /// Gets the list of inputs that have been banned by [`ban`].
@@ -373,6 +453,77 @@ impl<'a> CoinSelector<'a> {
             self.target().fee.rate,
             self.ancestors.selected(),
         )
+    }
+
+    /// The unconfirmed ancestors that are not dragged in yet but could still be, i.e. those of the
+    /// [`unselected`](Self::unselected) candidates. Respects [`ban`](Self::ban).
+    ///
+    /// These are exactly the ancestors a descendant of this selection can add.
+    pub fn addable_ancestors(&self) -> Bitset {
+        let mut union = Bitset::with_capacity(self.problem.ancestors().len());
+        if self.problem.has_ancestors() {
+            let already = self.selected_ancestors();
+            for cand_index in self.unselected_indices() {
+                for &anc_index in self.problem.drags_in(cand_index) {
+                    let anc_index = anc_index as usize;
+                    if !already.contains(anc_index) {
+                        union.insert(anc_index);
+                    }
+                }
+            }
+        }
+        union
+    }
+
+    /// The least [`ancestor_bump`](Self::ancestor_bump) this selection — or any selection extending
+    /// it — could still owe.
+    ///
+    /// This is **not** the bump of the current selection. A later coin can drag in an ancestor that
+    /// already overpays the target rate; that surplus nets against the deficit, so a descendant can
+    /// owe *less*. This method credits every still-reachable surplus and floors at zero:
+    ///
+    /// ```text
+    /// bump of this selection, and of every selection that adds more coins
+    ///     >=  max(0, currently_owed − reachable_surplus)
+    /// ```
+    ///
+    /// where `currently_owed` is `rate · ancestor_weight − ancestor_fee` of this selection, and
+    /// `reachable_surplus` is how much still-addable ancestors overpay the target rate.
+    ///
+    /// Surplus cannot be picked up ancestor by ancestor: ancestors arrive by selecting a
+    /// *candidate*, which drags in its whole transitive set. So `reachable_surplus` is accumulated
+    /// per group that must arrive together — the split [`SelectionProblem`] already computed:
+    ///
+    /// - Ancestors only one candidate can reach ([`private_ancestors`]) are netted as a group, and
+    ///   contribute only if the group as a whole is in surplus. A chain whose tip overpays but which
+    ///   nets to a deficit therefore offers nothing.
+    /// - Ancestors several candidates can reach ([`shared_drags_in`]) are credited individually,
+    ///   since which candidate brings them — and what else it brings — is not pinned down.
+    ///
+    /// This is still a relaxation: those groups may not be reachable *together*, and reaching them at
+    /// all means adding candidates (and their child weight). Both only push the real figure up. When
+    /// nothing reachable overpays, the bound equals the current bump.
+    ///
+    /// Constant time: the selector keeps the reachable surplus as a running total, in whole
+    /// satoshis rounded up per group. What is owed is computed exactly in `f64`, as
+    /// [`ancestor_bump`](Self::ancestor_bump) is, so the two need no rounding allowance between
+    /// them; the result can only sit below the exact value, which is the safe direction.
+    ///
+    /// [`private_ancestors`]: SelectionProblem::private_ancestors
+    /// [`shared_drags_in`]: SelectionProblem::shared_drags_in
+    pub fn ancestor_bump_lower_bound(&self) -> u64 {
+        if !self.problem.has_ancestors() {
+            return 0;
+        }
+        let (weight, fee) = self.ancestors.selected();
+        let owed = weight as f64 * self.target().fee.rate.spwu() as f64 - fee as f64;
+        let bound = owed - self.ancestors.reachable_surplus() as f64;
+        if bound <= 0.0 {
+            0
+        } else {
+            // Truncating a positive float rounds down, which is the safe direction.
+            bound as u64
+        }
     }
 
     /// Current weight of transaction implied by the selection.
@@ -523,9 +674,10 @@ impl<'a> CoinSelector<'a> {
 
     /// A lower bound on the child fee this selection, or any selection extending it, must pay.
     ///
-    /// Monotone in weight: it prices only the child weight so far (at whichever of the vbyte and
-    /// weight-unit roundings is lower) against the rate, absolute, and replacement constraints, and
-    /// ignores the (non-monotone) [`ancestor_bump`](Self::ancestor_bump).
+    /// It prices the child weight so far (at whichever of the vbyte and weight-unit roundings is
+    /// lower) against the rate, absolute, and replacement constraints, and adds the
+    /// [`ancestor_bump_lower_bound`](Self::ancestor_bump_lower_bound) to the rate constraint, since
+    /// every descendant owes at least that much for its ancestors.
     pub(crate) fn fee_floor(&self) -> u64 {
         let target = self.target();
         let weight = self.weight(DrainWeights::NONE);
@@ -534,7 +686,7 @@ impl<'a> CoinSelector<'a> {
             .rate
             .implied_fee_wu(weight)
             .min(target.fee.rate.implied_fee(weight));
-        let mut floor = rate_floor.max(target.fee.absolute);
+        let mut floor = (rate_floor + self.ancestor_bump_lower_bound()).max(target.fee.absolute);
         if let Some(replace) = target.fee.replace {
             floor = floor.max(
                 replace
@@ -1188,5 +1340,102 @@ impl Candidate {
     /// value*](Self::effective_value) at this `feerate`.
     pub fn fee_per_value(&self, feerate: FeeRate) -> f32 {
         self.implied_fee(feerate) / self.value as f32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{AncestorToBump, Input, TargetFee, TargetOutputs};
+
+    /// The running totals must depend only on which candidates are selected and banned, never on
+    /// the order of the operations that got there — branch and bound selects, deselects, bans and
+    /// unbans in place millions of times, so any drift would silently corrupt its bounds.
+    #[test]
+    fn running_totals_match_a_selector_rebuilt_from_its_sets() {
+        let target = Target {
+            fee: TargetFee::from_feerate(FeeRate::from_sat_per_vb(3.7)),
+            outputs: TargetOutputs::fund_outputs([(172, 40_000)]),
+            max_weight: None,
+        };
+        // Two chains reachable from several candidates (0-1 and 2-3) and one only candidate 6 can
+        // reach (4-5), each mixing an ancestor that pays above the target rate with one below.
+        let ancestors = [
+            AncestorToBump {
+                txid: 0,
+                weight: 800,
+                fee: 100,
+                parents: vec![],
+            },
+            AncestorToBump {
+                txid: 1,
+                weight: 400,
+                fee: 9_000,
+                parents: vec![0],
+            },
+            AncestorToBump {
+                txid: 2,
+                weight: 1_200,
+                fee: 0,
+                parents: vec![],
+            },
+            AncestorToBump {
+                txid: 3,
+                weight: 300,
+                fee: 4_000,
+                parents: vec![2],
+            },
+            AncestorToBump {
+                txid: 4,
+                weight: 500,
+                fee: 50_000,
+                parents: vec![5],
+            },
+            AncestorToBump {
+                txid: 5,
+                weight: 900,
+                fee: 0,
+                parents: vec![],
+            },
+        ];
+        let inputs = (0..9_u64).map(|i| Input {
+            value: 10_000 + i * 3_001,
+            weight: 272,
+            // 9 is not an ancestor, so a coin on it is confirmed.
+            residing_txid: [1, 3, 3, 2, 9, 1, 4, 3, 1][i as usize],
+        });
+        let problem = SelectionProblem::new(target, inputs, ancestors);
+        assert!(problem.has_private_ancestors() && problem.has_shared_ancestors());
+
+        let n = problem.len();
+        let mut cs = problem.selector();
+        let mut rng = 0x2545_f491_4f6c_dd1d_u64;
+        for _ in 0..20_000 {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            let index = (rng >> 8) as usize % n;
+            match rng % 4 {
+                0 => {
+                    cs.select(index);
+                }
+                1 => {
+                    cs.deselect(index);
+                }
+                2 => cs.ban(index),
+                _ => cs.unban(index),
+            }
+
+            let mut rebuilt = problem.selector();
+            for i in cs.selected_indices().iter() {
+                rebuilt.select(i);
+            }
+            for i in cs.banned().iter() {
+                rebuilt.ban(i);
+            }
+            assert_eq!(cs.ancestors, rebuilt.ancestors);
+            assert_eq!(cs.selected_value(), rebuilt.selected_value());
+            assert_eq!(cs.input_weight(), rebuilt.input_weight());
+        }
     }
 }
