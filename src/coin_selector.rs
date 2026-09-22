@@ -727,7 +727,8 @@ impl<'a> CoinSelector<'a> {
     /// [`BnbMetric`].
     ///
     /// Not every iteration will return a solution. If a solution is found, we return the selection
-    /// and score. Each subsequent solution of the iterator guarantees a higher score than the last.
+    /// and score. The first item is the greedy selection (if the metric scores it); each later
+    /// solution has a lower score than the last.
     ///
     /// Most of the time, you would want to use [`CoinSelector::run_bnb`] instead.
     pub fn bnb_solutions<M: BnbMetric>(
