@@ -2,8 +2,8 @@
 mod common;
 
 use bdk_coin_select::{
-    Candidate, CoinSelector, Drain, DrainWeights, FeeRate, SelectError, Target, TargetFee,
-    TargetOutputs, CHANGE_LOWER, TR_SPK_WEIGHT, TXOUT_BASE_WEIGHT,
+    Candidate, CoinSelector, Drain, DrainWeights, FeeRate, SelectError, SelectionProblem, Target,
+    TargetFee, TargetOutputs, CHANGE_LOWER, TR_SPK_WEIGHT, TXOUT_BASE_WEIGHT,
 };
 
 /// Deterministic, dependency-free `u64` source (SplitMix64) so we can drive `select_srd` without a
@@ -36,7 +36,8 @@ fn srd_success_yields_healthy_change_that_meets_target() {
 
     let mut successes = 0;
     for seed in 0..300u64 {
-        let mut cs = CoinSelector::new(&candidates, target);
+        let problem = SelectionProblem::new_no_ancestors(target, candidates.iter().copied());
+        let mut cs = CoinSelector::new(&problem);
         let result = cs.select_srd(drain_weights, CHANGE_LOWER, splitmix64(seed));
 
         if let Ok(drain) = result {
@@ -68,7 +69,7 @@ fn srd_success_yields_healthy_change_that_meets_target() {
 #[test]
 fn srd_insufficient_funds() {
     // 3 * 50_000 = 150_000 total, well below target (200_000) + CHANGE_LOWER (50_000) + fees.
-    let candidates = vec![
+    let candidates = [
         Candidate {
             value: 50_000,
             weight: 100,
@@ -89,7 +90,8 @@ fn srd_insufficient_funds() {
     let drain_weights = DrainWeights::TR_KEYSPEND;
 
     for seed in 0..50u64 {
-        let mut cs = CoinSelector::new(&candidates, target);
+        let problem = SelectionProblem::new_no_ancestors(target, candidates.iter().copied());
+        let mut cs = CoinSelector::new(&problem);
         let result = cs.select_srd(drain_weights, CHANGE_LOWER, splitmix64(seed));
         assert!(
             matches!(result, Err(SelectError::InsufficientFunds(_))),
@@ -122,7 +124,9 @@ fn srd_max_weight_exceeded() {
     };
 
     // Weight of the smallest selection that reaches target + change_lower, with no cap.
-    let mut probe = CoinSelector::new(&candidates, target(200_000, 5.0));
+    let problem =
+        SelectionProblem::new_no_ancestors(target(200_000, 5.0), candidates.iter().copied());
+    let mut probe = CoinSelector::new(&problem);
     probe
         .select_until(|cs| cs.excess(drain) >= CHANGE_LOWER as i64)
         .expect("candidates can cover target + change_lower");
@@ -135,7 +139,8 @@ fn srd_max_weight_exceeded() {
     };
 
     for seed in 0..20u64 {
-        let mut cs = CoinSelector::new(&candidates, capped);
+        let problem = SelectionProblem::new_no_ancestors(capped, candidates.iter().copied());
+        let mut cs = CoinSelector::new(&problem);
         let result = cs.select_srd(drain_weights, CHANGE_LOWER, splitmix64(seed));
         assert!(
             matches!(result, Err(SelectError::MaxWeightExceeded)),
@@ -159,7 +164,8 @@ fn srd_adds_nothing_when_already_sufficient() {
     };
 
     // Preselect enough that the change already exceeds `change_lower`.
-    let mut cs = CoinSelector::new(&candidates, target);
+    let problem = SelectionProblem::new_no_ancestors(target, candidates.iter().copied());
+    let mut cs = CoinSelector::new(&problem);
     cs.select_until(|cs| cs.excess(drain) >= CHANGE_LOWER as i64)
         .expect("candidates can cover target + change_lower");
     let before: Vec<usize> = cs.selected_indices().iter().collect();

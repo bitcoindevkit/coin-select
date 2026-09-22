@@ -28,6 +28,8 @@ mod target;
 pub use target::*;
 mod drain;
 pub use drain::*;
+mod selection_problem;
+pub use selection_problem::*;
 
 /// The weight of an unsatisfied txin: the non-discounted `prevout` (32+4), `nSequence` (4) and
 /// empty `scriptSig` length (1), plus the discounted empty `scriptWitness` stack item count (1).

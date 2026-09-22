@@ -1,7 +1,8 @@
 #![allow(clippy::zero_prefixed_literal)]
 
 use bdk_coin_select::{
-    Candidate, CoinSelector, Drain, DrainWeights, Target, TargetFee, TargetOutputs,
+    Candidate, CoinSelector, Drain, DrainWeights, SelectionProblem, Target, TargetFee,
+    TargetOutputs,
 };
 use bitcoin::{consensus::Decodable, ScriptBuf, Transaction};
 use proptest::prelude::*;
@@ -53,7 +54,8 @@ fn segwit_one_input_one_output() {
         fee: TargetFee::ZERO,
         max_weight: None,
     };
-    let mut coin_selector = CoinSelector::new(&candidates, target);
+    let problem = SelectionProblem::new_no_ancestors(target, candidates.iter().copied());
+    let mut coin_selector = CoinSelector::new(&problem);
     coin_selector.select_all();
 
     assert_eq!(
@@ -99,7 +101,8 @@ fn segwit_two_inputs_one_output() {
         fee: TargetFee::ZERO,
         max_weight: None,
     };
-    let mut coin_selector = CoinSelector::new(&candidates, target);
+    let problem = SelectionProblem::new_no_ancestors(target, candidates.iter().copied());
+    let mut coin_selector = CoinSelector::new(&problem);
 
     coin_selector.select_all();
 
@@ -147,7 +150,8 @@ fn legacy_three_inputs() {
         fee: TargetFee::ZERO,
         max_weight: None,
     };
-    let mut coin_selector = CoinSelector::new(&candidates, target);
+    let problem = SelectionProblem::new_no_ancestors(target, candidates.iter().copied());
+    let mut coin_selector = CoinSelector::new(&problem);
     coin_selector.select_all();
 
     // Every tx is priced as segwit, so an all-legacy tx pays for the 2 WU witness header and a
@@ -208,7 +212,8 @@ fn legacy_three_inputs_one_segwit() {
         fee: TargetFee::ZERO,
         max_weight: None,
     };
-    let mut coin_selector = CoinSelector::new(&candidates, target);
+    let problem = SelectionProblem::new_no_ancestors(target, candidates.iter().copied());
+    let mut coin_selector = CoinSelector::new(&problem);
     coin_selector.select_all();
 
     assert_eq!(
@@ -267,7 +272,8 @@ fn legacy_inputs_grouped_with_segwit_input() {
         fee: TargetFee::ZERO,
         max_weight: None,
     };
-    let mut coin_selector = CoinSelector::new(&candidates, target);
+    let problem = SelectionProblem::new_no_ancestors(target, candidates.iter().copied());
+    let mut coin_selector = CoinSelector::new(&problem);
     coin_selector.select_all();
 
     assert_eq!(
@@ -293,14 +299,15 @@ proptest! {
         ),
         ops in proptest::collection::vec((any::<proptest::sample::Index>(), any::<bool>()), 0..600),
     ) {
-        let mut cs = CoinSelector::new(
-            &candidates,
+        let problem = SelectionProblem::new_no_ancestors(
             Target {
                 fee: TargetFee::ZERO,
                 outputs: TargetOutputs::fund_outputs([]),
                 max_weight: None,
             },
+            candidates.iter().copied(),
         );
+        let mut cs = CoinSelector::new(&problem);
         for (index, select) in ops {
             let index = index.index(candidates.len());
             if select {

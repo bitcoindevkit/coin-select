@@ -2,7 +2,7 @@
 
 use bdk_coin_select::{
     float::Ordf32, metrics::LowestFee, BnbMetric, Candidate, CoinSelector, Drain, DrainWeights,
-    FeeRate, NoBnbSolution, Replace, Target, TargetFee, TargetOutputs,
+    FeeRate, NoBnbSolution, Replace, SelectionProblem, Target, TargetFee, TargetOutputs,
 };
 use proptest::{
     prelude::*,
@@ -51,7 +51,9 @@ where
 
     let target = params.target();
 
-    let mut selection = CoinSelector::new(&candidates, target);
+    let problem = SelectionProblem::new_no_ancestors(target, candidates.iter().copied());
+
+    let mut selection = CoinSelector::new(&problem);
     let mut exp_selection = selection.clone();
 
     if metric.requires_ordering_by_descending_value_pwu() {
@@ -141,8 +143,10 @@ where
 
     let target = params.target();
 
+    let problem = SelectionProblem::new_no_ancestors(target, candidates.iter().copied());
+
     let init_cs = {
-        let mut cs = CoinSelector::new(&candidates, target);
+        let mut cs = CoinSelector::new(&problem);
         if metric.requires_ordering_by_descending_value_pwu() {
             cs.sort_candidates_by_descending_value_pwu();
         }
@@ -435,7 +439,8 @@ pub fn compare_against_benchmarks<M: BnbMetric + Clone>(
     let start = std::time::Instant::now();
     let mut rng = TestRng::deterministic_rng(RngAlgorithm::ChaCha);
     let target = params.target();
-    let cs = CoinSelector::new(&candidates, target);
+    let problem = SelectionProblem::new_no_ancestors(target, candidates.iter().copied());
+    let cs = CoinSelector::new(&problem);
     let solutions = cs.bnb_solutions(metric.clone());
 
     let best = solutions

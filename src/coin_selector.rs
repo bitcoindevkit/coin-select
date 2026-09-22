@@ -1,7 +1,9 @@
 use super::*;
 #[allow(unused)] // some bug in <= 1.48.0 sees this as unused when it isn't
 use crate::float::FloatExt;
-use crate::{bitset::Bitset, bnb::BnbMetric, float::Ordf32, ChangePolicy, FeeRate, Target};
+use crate::{
+    bitset::Bitset, bnb::BnbMetric, float::Ordf32, ChangePolicy, FeeRate, SelectionProblem, Target,
+};
 use alloc::{sync::Arc, vec::Vec};
 
 /// The minimum change amount Bitcoin Core's `SelectCoinsSRD` targets; a sensible default for the
@@ -17,8 +19,7 @@ pub const CHANGE_LOWER: u64 = 50_000;
 /// [`bnb_solutions`]: CoinSelector::bnb_solutions
 #[derive(Debug, Clone)]
 pub struct CoinSelector<'a> {
-    candidates: &'a [Candidate],
-    target: Target,
+    problem: &'a SelectionProblem,
     selected: Bitset,
     banned: Bitset,
     candidate_order: Arc<Vec<usize>>,
@@ -30,27 +31,22 @@ pub struct CoinSelector<'a> {
 }
 
 impl<'a> CoinSelector<'a> {
-    /// Creates a new coin selector from some candidate inputs and a `base_weight`.
+    /// Creates a new coin selector for `problem`.
     ///
-    /// The `base_weight` is the weight of the transaction without any inputs and without a change
-    /// output.
+    /// The [`SelectionProblem`] is fixed for the life of the selector: its target and candidates.
+    /// Everything the selector reports is measured against that one target. Methods refer to
+    /// candidates by index into [`SelectionProblem::candidates`].
     ///
     /// The `CoinSelector` does not keep track of the final transaction's output count. The caller
     /// is responsible for including the potential output-count varint weight change in the
     /// corresponding [`DrainWeights`].
-    ///
-    /// Note that methods in `CoinSelector` will refer to inputs by the index in the `candidates`
-    /// slice you pass in.
-    ///
-    /// `target` is fixed for the life of the selector. Everything it reports is measured against
-    /// that one target.
-    pub fn new(candidates: &'a [Candidate], target: Target) -> Self {
+    pub fn new(problem: &'a SelectionProblem) -> Self {
+        let n = problem.len();
         Self {
-            candidates,
-            target,
-            selected: Bitset::with_capacity(candidates.len()),
-            banned: Bitset::with_capacity(candidates.len()),
-            candidate_order: Arc::new((0..candidates.len()).collect::<Vec<_>>()),
+            problem,
+            selected: Bitset::with_capacity(n),
+            banned: Bitset::with_capacity(n),
+            candidate_order: Arc::new((0..n).collect::<Vec<_>>()),
             selected_value: 0,
             selected_weight: 0,
             selected_input_count: 0,
@@ -59,38 +55,55 @@ impl<'a> CoinSelector<'a> {
 
     /// What this selector is funding.
     pub fn target(&self) -> Target {
-        self.target
+        self.problem.target()
     }
 
-    /// A copy of this selector — same selection, bans and candidate order — that funds `target`
+    /// The selection problem this selector is solving.
+    pub fn problem(&self) -> &'a SelectionProblem {
+        self.problem
+    }
+
+    /// A copy of this selector — same selection, bans and candidate order — over `problem`
     /// instead.
     ///
-    /// Use this to measure a selection against a second target, for example to check whether a fee
-    /// bump needs more inputs.
+    /// Use this with [`SelectionProblem::with_target`] to measure a selection against a second
+    /// target, for example to check whether a fee bump needs more inputs.
+    ///
+    /// # Panics
+    ///
+    /// If `problem` does not have the same number of candidates as this selector's problem, since
+    /// the selection refers to candidates by index.
     ///
     /// ```
-    /// # use bdk_coin_select::{Candidate, CoinSelector, FeeRate, Target, TargetFee, TargetOutputs};
+    /// # use bdk_coin_select::{Candidate, CoinSelector, FeeRate, SelectionProblem, Target, TargetFee, TargetOutputs};
     /// # let candidates = [Candidate::new_tr_keyspend(100_000), Candidate::new_tr_keyspend(100_000)];
     /// let target = Target {
     ///     outputs: TargetOutputs::fund_outputs([(46 * 4, 90_000)]),
     ///     fee: TargetFee::from_feerate(FeeRate::from_sat_per_vb(1.0)),
     ///     max_weight: None,
     /// };
-    /// let mut selector = CoinSelector::new(&candidates, target);
+    /// let problem = SelectionProblem::new_no_ancestors(target, candidates);
+    /// let mut selector = problem.selector();
     /// selector.select(0);
     /// assert!(selector.is_funded());
     ///
     /// // Would that same selection still fund the transaction at a much higher feerate?
-    /// let bumped = selector.with_target(Target {
+    /// let bumped_problem = problem.with_target(Target {
     ///     fee: TargetFee::from_feerate(FeeRate::from_sat_per_vb(500.0)),
     ///     ..target
     /// });
+    /// let bumped = selector.with_problem(&bumped_problem);
     /// assert_eq!(bumped.selected_indices(), selector.selected_indices());
     /// assert!(!bumped.is_funded(), "the bump needs another input");
     /// ```
-    pub fn with_target(&self, target: Target) -> Self {
-        Self {
-            target,
+    pub fn with_problem(&self, problem: &'a SelectionProblem) -> CoinSelector<'a> {
+        assert_eq!(
+            problem.len(),
+            self.problem.len(),
+            "the selection refers to candidates by index, so both problems must have the same candidates"
+        );
+        CoinSelector {
+            problem,
             ..self.clone()
         }
     }
@@ -100,23 +113,24 @@ impl<'a> CoinSelector<'a> {
     pub fn candidates(
         &self,
     ) -> impl DoubleEndedIterator<Item = (usize, Candidate)> + ExactSizeIterator + '_ {
+        let candidates = self.problem.candidates();
         self.candidate_order
             .iter()
-            .map(move |i| (*i, self.candidates[*i]))
+            .map(move |i| (*i, candidates[*i]))
     }
 
-    /// Get the candidate at `index`. `index` refers to its position in the original `candidates`
-    /// slice passed into [`CoinSelector::new`].
+    /// Get the candidate at `index`. `index` refers to its position in
+    /// [`SelectionProblem::candidates`].
     pub fn candidate(&self, index: usize) -> Candidate {
-        self.candidates[index]
+        self.problem.candidates()[index]
     }
 
-    /// Deselect a candidate at `index`. `index` refers to its position in the original `candidates`
-    /// slice passed into [`CoinSelector::new`].
+    /// Deselect a candidate at `index`. `index` refers to its position in
+    /// [`SelectionProblem::candidates`].
     pub fn deselect(&mut self, index: usize) -> bool {
         let removed = self.selected.remove(index);
         if removed {
-            let candidate = self.candidates[index];
+            let candidate = self.problem.candidates()[index];
             self.selected_value -= candidate.value;
             self.selected_weight -= candidate.weight;
             self.selected_input_count -= candidate.input_count;
@@ -125,19 +139,19 @@ impl<'a> CoinSelector<'a> {
     }
 
     /// Convienince method to pick elements of a slice by the indexes that are currently selected.
-    /// Obviously the slice must represent the inputs ordered in the same way as when they were
-    /// passed to `Candidates::new`.
+    /// Obviously the slice must represent the inputs ordered in the same way as
+    /// [`SelectionProblem::candidates`].
     pub fn apply_selection<T>(&self, candidates: &'a [T]) -> impl Iterator<Item = &'a T> + '_ {
         self.selected.iter().map(move |i| &candidates[i])
     }
 
-    /// Select the input at `index`. `index` refers to its position in the original `candidates`
-    /// slice passed into [`CoinSelector::new`].
+    /// Select the input at `index`. `index` refers to its position in
+    /// [`SelectionProblem::candidates`].
     pub fn select(&mut self, index: usize) -> bool {
-        assert!(index < self.candidates.len());
+        assert!(index < self.problem.len());
         let inserted = self.selected.insert(index);
         if inserted {
-            let candidate = self.candidates[index];
+            let candidate = self.problem.candidates()[index];
             self.selected_value += candidate.value;
             self.selected_weight += candidate.weight;
             self.selected_input_count += candidate.input_count;
@@ -159,7 +173,7 @@ impl<'a> CoinSelector<'a> {
     /// Ban an input from being selected. Banning the input means it won't show up in [`unselected`]
     /// or [`unselected_indices`]. Note it can still be manually selected.
     ///
-    /// `index` refers to its position in the original `candidates` slice passed into [`CoinSelector::new`].
+    /// `index` refers to its position in [`SelectionProblem::candidates`].
     ///
     /// [`unselected`]: Self::unselected
     /// [`unselected_indices`]: Self::unselected_indices
@@ -178,8 +192,8 @@ impl<'a> CoinSelector<'a> {
         &self.banned
     }
 
-    /// Is the input at `index` selected. `index` refers to its position in the original
-    /// `candidates` slice passed into [`CoinSelector::new`].
+    /// Is the input at `index` selected. `index` refers to its position in
+    /// [`SelectionProblem::candidates`].
     pub fn is_selected(&self, index: usize) -> bool {
         self.selected.contains(index)
     }
@@ -230,7 +244,7 @@ impl<'a> CoinSelector<'a> {
     pub fn weight(&self, drain_weight: DrainWeights) -> u64 {
         TX_FIXED_FIELD_WEIGHT
             + self.input_weight()
-            + self.target.outputs.output_weight_with_drain(drain_weight)
+            + self.target().outputs.output_weight_with_drain(drain_weight)
     }
 
     /// How much the current selection overshoots the value needed to achieve the
@@ -254,42 +268,42 @@ impl<'a> CoinSelector<'a> {
         }
     }
 
-    /// How much the current selection overshoots the value need to satisfy `self.target.fee.rate` and
-    /// `self.target.value` (while ignoring `self.target.fee.absolute`).
+    /// How much the current selection overshoots the value need to satisfy `self.target().fee.rate` and
+    /// `self.target().value` (while ignoring `self.target().fee.absolute`).
     pub fn rate_excess(&self, drain: Drain) -> i64 {
         self.selected_value() as i64
-            - self.target.value() as i64
+            - self.target().value() as i64
             - drain.value as i64
             - self.implied_fee_from_feerate(drain.weights) as i64
     }
 
-    /// Same as [rate_excess](Self::rate_excess) except `self.target.fee.rate` is applied to the
+    /// Same as [rate_excess](Self::rate_excess) except `self.target().fee.rate` is applied to the
     /// implied transaction's weight units directly without any conversion to vbytes.
     pub fn rate_excess_wu(&self, drain: Drain) -> i64 {
         self.selected_value() as i64
-            - self.target.value() as i64
+            - self.target().value() as i64
             - drain.value as i64
             - self.implied_fee_from_feerate_wu(drain.weights) as i64
     }
 
-    /// How much the current selection overshoots the value needed to satisfy `self.target.fee.absolute`
-    /// and `self.target.value` (while ignoring `self.target.fee.rate`).
+    /// How much the current selection overshoots the value needed to satisfy `self.target().fee.absolute`
+    /// and `self.target().value` (while ignoring `self.target().fee.rate`).
     pub fn absolute_excess(&self, drain: Drain) -> i64 {
         self.selected_value() as i64
-            - self.target.value() as i64
+            - self.target().value() as i64
             - drain.value as i64
-            - self.target.fee.absolute as i64
+            - self.target().fee.absolute as i64
     }
 
     /// How much the current selection overshoots the value needed to satisfy RBF's rule 4.
     pub fn replacement_excess(&self, drain: Drain) -> i64 {
         let mut replacement_excess_needed = 0;
-        if let Some(replace) = self.target.fee.replace {
+        if let Some(replace) = self.target().fee.replace {
             replacement_excess_needed =
                 replace.min_fee_to_do_replacement(self.weight(drain.weights))
         }
         self.selected_value() as i64
-            - self.target.value() as i64
+            - self.target().value() as i64
             - drain.value as i64
             - replacement_excess_needed as i64
     }
@@ -298,12 +312,12 @@ impl<'a> CoinSelector<'a> {
     /// is calculated using weight units directly without any conversion to vbytes.
     pub fn replacement_excess_wu(&self, drain: Drain) -> i64 {
         let mut replacement_excess_needed = 0;
-        if let Some(replace) = self.target.fee.replace {
+        if let Some(replace) = self.target().fee.replace {
             replacement_excess_needed =
                 replace.min_fee_to_do_replacement_wu(self.weight(drain.weights))
         }
         self.selected_value() as i64
-            - self.target.value() as i64
+            - self.target().value() as i64
             - drain.value as i64
             - replacement_excess_needed as i64
     }
@@ -314,7 +328,7 @@ impl<'a> CoinSelector<'a> {
     /// Returns `None` if the feerate would be negative or infinity.
     pub fn implied_feerate(&self, drain: Drain) -> Option<FeeRate> {
         let numerator = self.selected_value() as i64
-            - self.target.outputs.value_sum as i64
+            - self.target().outputs.value_sum as i64
             - drain.value as i64;
         let denom = self.weight(drain.weights);
         if numerator < 0 || denom == 0 {
@@ -333,9 +347,9 @@ impl<'a> CoinSelector<'a> {
     pub fn implied_fee(&self, drain_weights: DrainWeights) -> u64 {
         let mut implied_fee = self
             .implied_fee_from_feerate(drain_weights)
-            .max(self.target.fee.absolute);
+            .max(self.target().fee.absolute);
 
-        if let Some(replace) = self.target.fee.replace {
+        if let Some(replace) = self.target().fee.replace {
             implied_fee = Ord::max(
                 implied_fee,
                 replace.min_fee_to_do_replacement(self.weight(drain_weights)),
@@ -346,11 +360,14 @@ impl<'a> CoinSelector<'a> {
     }
 
     fn implied_fee_from_feerate(&self, drain_weights: DrainWeights) -> u64 {
-        self.target.fee.rate.implied_fee(self.weight(drain_weights))
+        self.target()
+            .fee
+            .rate
+            .implied_fee(self.weight(drain_weights))
     }
 
     fn implied_fee_from_feerate_wu(&self, drain_weights: DrainWeights) -> u64 {
-        self.target
+        self.target()
             .fee
             .rate
             .implied_fee_wu(self.weight(drain_weights))
@@ -361,18 +378,18 @@ impl<'a> CoinSelector<'a> {
     ///
     /// This can be negative when the selection is invalid (outputs are greater than inputs).
     pub fn fee(&self, drain_value: u64) -> i64 {
-        self.selected_value() as i64 - self.target.value() as i64 - drain_value as i64
+        self.selected_value() as i64 - self.target().value() as i64 - drain_value as i64
     }
 
     /// The value of the current selected inputs minus the fee needed to pay for the selected inputs
     pub fn effective_value(&self) -> i64 {
         self.selected_value() as i64
-            - (self.input_weight() as f32 * self.target.fee.rate.spwu()).ceil() as i64
+            - (self.input_weight() as f32 * self.target().fee.rate.spwu()).ceil() as i64
     }
 
     // /// Waste sum of all selected inputs.
     fn input_waste(&self, long_term_feerate: FeeRate) -> f32 {
-        self.input_weight() as f32 * (self.target.fee.rate.spwu() - long_term_feerate.spwu())
+        self.input_weight() as f32 * (self.target().fee.rate.spwu() - long_term_feerate.spwu())
     }
 
     /// Sorts the candidates by the comparision function.
@@ -388,7 +405,7 @@ impl<'a> CoinSelector<'a> {
     where
         F: FnMut((usize, Candidate), (usize, Candidate)) -> core::cmp::Ordering,
     {
-        let candidates = &self.candidates;
+        let candidates = self.problem.candidates();
         Arc::make_mut(&mut self.candidate_order)
             .sort_by(|a, b| cmp((*a, candidates[*a]), (*b, candidates[*b])))
     }
@@ -447,9 +464,9 @@ impl<'a> CoinSelector<'a> {
             waste += excess_waste;
         } else {
             waste += drain.weights.waste(
-                self.target.fee.rate,
+                self.target().fee.rate,
                 long_term_feerate,
-                self.target.outputs.n_outputs,
+                self.target().outputs.n_outputs,
             );
         }
 
@@ -462,7 +479,7 @@ impl<'a> CoinSelector<'a> {
     ) -> impl ExactSizeIterator<Item = (usize, Candidate)> + DoubleEndedIterator + '_ {
         self.selected
             .iter()
-            .map(move |index| (index, self.candidates[index]))
+            .map(move |index| (index, self.problem.candidates()[index]))
     }
 
     /// The unselected candidates with their index.
@@ -472,7 +489,7 @@ impl<'a> CoinSelector<'a> {
     /// [`sort_candidates_by`]: Self::sort_candidates_by
     pub fn unselected(&self) -> impl DoubleEndedIterator<Item = (usize, Candidate)> + '_ {
         self.unselected_indices()
-            .map(move |i| (i, self.candidates[i]))
+            .map(move |i| (i, self.problem.candidates()[i]))
     }
 
     /// The weight of the lightest unselected (addable) candidate, or `None` when nothing is left to
@@ -515,7 +532,7 @@ impl<'a> CoinSelector<'a> {
     /// feasibility (adding inputs adds weight), so it is kept separate from the monotone
     /// value-only [`is_funded`](Self::is_funded).
     pub fn is_within_max_weight(&self, drain_weights: DrainWeights) -> bool {
-        match self.target.max_weight {
+        match self.target().max_weight {
             Some(max_weight) => self.weight(drain_weights) <= max_weight,
             None => true,
         }
@@ -605,7 +622,8 @@ impl<'a> CoinSelector<'a> {
             let cand_index = self.candidate_order[i];
             if self.selected.contains(cand_index)
                 || self.banned.contains(cand_index)
-                || self.candidates[cand_index].effective_value(self.target.fee.rate) <= 0.0
+                || self.problem.candidates()[cand_index].effective_value(self.target().fee.rate)
+                    <= 0.0
             {
                 continue;
             }

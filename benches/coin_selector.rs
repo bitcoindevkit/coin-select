@@ -14,8 +14,8 @@
 #![allow(clippy::incompatible_msrv)]
 
 use bdk_coin_select::{
-    metrics::LowestFee, Candidate, CoinSelector, DrainWeights, FeeRate, Target, TargetFee,
-    TargetOutputs, TR_SPK_WEIGHT, TXIN_BASE_WEIGHT, TXOUT_BASE_WEIGHT,
+    metrics::LowestFee, Candidate, CoinSelector, DrainWeights, FeeRate, SelectionProblem, Target,
+    TargetFee, TargetOutputs, TR_SPK_WEIGHT, TXIN_BASE_WEIGHT, TXOUT_BASE_WEIGHT,
 };
 use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 use std::hint::black_box;
@@ -56,7 +56,8 @@ fn bench_coin_selector_clone(c: &mut Criterion) {
     for &n in &[64usize, 256, 1024, 4096] {
         let candidates = make_candidates(n);
         let (target, _) = make_bnb_inputs(&candidates);
-        let mut selector = CoinSelector::new(&candidates, target);
+        let problem = SelectionProblem::new_no_ancestors(target, candidates.iter().copied());
+        let mut selector = CoinSelector::new(&problem);
         // Select ~10% of candidates so `selected` is non-trivial to copy.
         for i in (0..n).step_by(10) {
             selector.select(i);
@@ -75,7 +76,8 @@ fn bench_run_bnb_lowest_fee(c: &mut Criterion) {
     for &n in &[20usize, 50, 100, 200] {
         let candidates = make_candidates(n);
         let (target, long_term_feerate) = make_bnb_inputs(&candidates);
-        let selector = CoinSelector::new(&candidates, target);
+        let problem = SelectionProblem::new_no_ancestors(target, candidates.iter().copied());
+        let selector = CoinSelector::new(&problem);
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
             b.iter_batched(
                 || selector.clone(),
