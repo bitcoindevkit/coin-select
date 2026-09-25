@@ -4,6 +4,7 @@ on:
       - master
   pull_request:
 
+permissions: {}
 
 # Make sure CI fails on all warnings, including Clippy lints
 env:
@@ -16,6 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -25,6 +28,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -35,6 +40,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@1.54.0
         # don't want dev-dependencies for MSRV check
       - run: sed -i 's/\[dev-dependencies]/[ignore-this-warning-fren]/g' Cargo.toml
@@ -44,6 +51,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --release
 
@@ -52,5 +61,29 @@ jobs:
      runs-on: ubuntu-latest
      steps:
        - uses: actions/checkout@v4
+         with:
+           persist-credentials: false
        - uses: dtolnay/rust-toolchain@stable
        - run:  cargo doc --no-deps
+
+  check-no-std:
+    name: Check no_std
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo check --no-default-features
+
+  check-wasm:
+    name: Check WASM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - run: cargo check --target wasm32-unknown-unknown --no-default-features
