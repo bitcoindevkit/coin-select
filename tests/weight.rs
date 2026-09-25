@@ -3,7 +3,8 @@
 use bdk_coin_select::{
     Candidate, CoinSelector, Drain, DrainWeights, Target, TargetFee, TargetOutputs,
 };
-use bitcoin::{consensus::Decodable, ScriptBuf, Transaction};
+use bitcoin::{consensus::Decodable, Script, ScriptBuf, Transaction, TxIn};
+use miniscript::{Descriptor, Miniscript};
 
 fn hex_val(c: u8) -> u8 {
     match c {
@@ -38,7 +39,6 @@ fn segwit_one_input_one_output() {
             value,
             weight: txin.segwit_weight().to_wu(),
             input_count: 1,
-            is_segwit: true,
         })
         .collect::<Vec<_>>();
 
@@ -86,7 +86,6 @@ fn segwit_two_inputs_one_output() {
             value,
             weight: txin.segwit_weight().to_wu(),
             input_count: 1,
-            is_segwit: true,
         })
         .collect::<Vec<_>>();
 
@@ -119,11 +118,16 @@ fn segwit_two_inputs_one_output() {
     );
 }
 
-#[test]
-fn legacy_three_inputs() {
+/// A real legacy tx spending three P2SH 2-of-3 multisig inputs.
+fn legacy_three_inputs_tx() -> Transaction {
     // FROM https://mempool.space/tx/5f231df4f73694b3cca9211e336451c20dab136e0a843c2e3166cdcb093e91f4
     let tx_bytes = hex_decode("0100000003fe785783e14669f638ba902c26e8e3d7036fb183237bc00f8a10542191c7171300000000fdfd00004730440220418996f20477d143d02ad47e74e5949641b6c2904159ab7c592d2cfc659f9bd802205b18f18ac86b714971f84a8b74a4cb14ad5c1a5b9d0d939bb32c6ae4032f4ea10148304502210091296ff8dd87b5ebfc3d47cb82cfe4750d52c544a2b88a85970354a4d0d4b1db022069632067ee6f30f06145f649bc76d5e5d5e6404dbe985e006fcde938f778c297014c695221030502b8ade694d57a6e86998180a64f4ce993372830dc796c3d561ad8b2a504de210272b68e1c037c4630eff7ea5858640cc0748e36f5de82fb38529ef1fd0a89670d2103ba0544a3a2aa9f2314022760b78b5c833aebf6f88468a089550f93834a2886ed53aeffffffff7e048a7c53a8af656e24442c65fe4c4299b1494f6c7579fe0fd9fa741ce83e3279000000fc004730440220018fa343acccd048ed8f8f179e1b6ae27435a41b5fb2c1d96a5a772777acc6dc022074783814f2100c6fc4d4c976f941212be50825814502ca0cbe3f929db789979e0147304402206373f01b73fb09876d0f5ee3087e0614cab3be249934bc2b7eb64ee67f53dc8302200b50f8a327020172b82aaba7480c77ecf07bb32322a05f4afbc543aa97d2fde8014c69522103039d906b2494e310f6c7774c98618be552720d04781e073dd3ff25d5906f22662103d82026baa529619b103ec6341d548a7eb6d924061a8469a7416155513a3071c12102e452bc4aa726d44646ba80db70465683b30efde282a19aa35c6029ae8925df5e53aeffffffffef80f0b1cc543de4f73d59c02a3c575ae5d0af17c1e11e6be7abe3325c777507ad000000fdfd00004730440220220fee11bf836621a11a8ea9100a4600c109c13895f11468d3e2062210c5481902201c5c8a462175538e87b8248e1ed3927c3a461c66d1b46215641c875e86eb22c4014830450221008d2de8c2f20a720129c372791e595b9602b1a9bce99618497aec5266148ffc1302203a493359d700ed96323f8805ed03e909959ff0f22eff359028db6861486b1555014c6952210374a4add33567f09967592c5bcdc3db421fdbba67bac4636328f96d941da31bd221039636c2ffac90afb7499b16e265078113dfb2d77b54270e37353217c9eaeaf3052103d0bcea6d10cdd2f16018ea71572631708e26f457f67cda36a7f816a87f7791d253aeffffffff04977261000000000016001470385d054721987f41521648d7b2f5c77f735d6bee92030000000000225120d0cda1b675a0b369964cbfa381721aae3549dd2c9c6f2cf71ff67d5bc277afd3f2aaf30000000000160014ed2d41ba08313dbb2630a7106b2fedafc14aa121d4f0c70000000000220020e5c7c00d174631d2d1e365d6347b016fb87b6a0c08902d8e443989cb771fa7ec00000000");
-    let tx = Transaction::consensus_decode(&mut tx_bytes.as_slice()).unwrap();
+    Transaction::consensus_decode(&mut tx_bytes.as_slice()).unwrap()
+}
+
+#[test]
+fn legacy_three_inputs() {
+    let tx = legacy_three_inputs_tx();
     let orig_weight = tx.weight();
     let input_values = vec![022_680_000, 006_558_175, 006_558_200];
     let candidates = tx
@@ -132,9 +136,8 @@ fn legacy_three_inputs() {
         .zip(input_values)
         .map(|(txin, value)| Candidate {
             value,
-            weight: txin.legacy_weight().to_wu(),
+            weight: txin.segwit_weight().to_wu(),
             input_count: 1,
-            is_segwit: false,
         })
         .collect::<Vec<_>>();
 
@@ -152,9 +155,11 @@ fn legacy_three_inputs() {
     let mut coin_selector = CoinSelector::new(&candidates, target);
     coin_selector.select_all();
 
+    // Every tx is priced as segwit, so an all-legacy tx pays for the 2 WU witness header and a
+    // 1 WU empty witness per input that it doesn't actually serialize.
     assert_eq!(
         coin_selector.weight(DrainWeights::NONE),
-        orig_weight.to_wu()
+        orig_weight.to_wu() + 2 + 3
     );
     assert_eq!(
         (coin_selector
@@ -163,41 +168,35 @@ fn legacy_three_inputs() {
             .as_sat_vb()
             * 10.0)
             .round(),
-        99.2 * 10.0
+        99.1 * 10.0
     );
 }
 
-#[test]
-fn legacy_three_inputs_one_segwit() {
-    // FROM https://mempool.space/tx/5f231df4f73694b3cca9211e336451c20dab136e0a843c2e3166cdcb093e91f4
-    // Except we change the middle input to segwit
-    let tx_bytes = hex_decode("0100000003fe785783e14669f638ba902c26e8e3d7036fb183237bc00f8a10542191c7171300000000fdfd00004730440220418996f20477d143d02ad47e74e5949641b6c2904159ab7c592d2cfc659f9bd802205b18f18ac86b714971f84a8b74a4cb14ad5c1a5b9d0d939bb32c6ae4032f4ea10148304502210091296ff8dd87b5ebfc3d47cb82cfe4750d52c544a2b88a85970354a4d0d4b1db022069632067ee6f30f06145f649bc76d5e5d5e6404dbe985e006fcde938f778c297014c695221030502b8ade694d57a6e86998180a64f4ce993372830dc796c3d561ad8b2a504de210272b68e1c037c4630eff7ea5858640cc0748e36f5de82fb38529ef1fd0a89670d2103ba0544a3a2aa9f2314022760b78b5c833aebf6f88468a089550f93834a2886ed53aeffffffff7e048a7c53a8af656e24442c65fe4c4299b1494f6c7579fe0fd9fa741ce83e3279000000fc004730440220018fa343acccd048ed8f8f179e1b6ae27435a41b5fb2c1d96a5a772777acc6dc022074783814f2100c6fc4d4c976f941212be50825814502ca0cbe3f929db789979e0147304402206373f01b73fb09876d0f5ee3087e0614cab3be249934bc2b7eb64ee67f53dc8302200b50f8a327020172b82aaba7480c77ecf07bb32322a05f4afbc543aa97d2fde8014c69522103039d906b2494e310f6c7774c98618be552720d04781e073dd3ff25d5906f22662103d82026baa529619b103ec6341d548a7eb6d924061a8469a7416155513a3071c12102e452bc4aa726d44646ba80db70465683b30efde282a19aa35c6029ae8925df5e53aeffffffffef80f0b1cc543de4f73d59c02a3c575ae5d0af17c1e11e6be7abe3325c777507ad000000fdfd00004730440220220fee11bf836621a11a8ea9100a4600c109c13895f11468d3e2062210c5481902201c5c8a462175538e87b8248e1ed3927c3a461c66d1b46215641c875e86eb22c4014830450221008d2de8c2f20a720129c372791e595b9602b1a9bce99618497aec5266148ffc1302203a493359d700ed96323f8805ed03e909959ff0f22eff359028db6861486b1555014c6952210374a4add33567f09967592c5bcdc3db421fdbba67bac4636328f96d941da31bd221039636c2ffac90afb7499b16e265078113dfb2d77b54270e37353217c9eaeaf3052103d0bcea6d10cdd2f16018ea71572631708e26f457f67cda36a7f816a87f7791d253aeffffffff04977261000000000016001470385d054721987f41521648d7b2f5c77f735d6bee92030000000000225120d0cda1b675a0b369964cbfa381721aae3549dd2c9c6f2cf71ff67d5bc277afd3f2aaf30000000000160014ed2d41ba08313dbb2630a7106b2fedafc14aa121d4f0c70000000000220020e5c7c00d174631d2d1e365d6347b016fb87b6a0c08902d8e443989cb771fa7ec00000000");
-    let mut tx = Transaction::consensus_decode(&mut tx_bytes.as_slice()).unwrap();
+/// The tx from `legacy_three_inputs_tx`, except the middle input is changed to a P2WPKH spend.
+/// Inputs 0 and 2 are legacy, each with a 253-byte scriptSig (a 3-byte length varint).
+fn legacy_three_inputs_one_segwit_tx() -> Transaction {
+    let mut tx = legacy_three_inputs_tx();
     tx.input[1].script_sig = ScriptBuf::default();
     tx.input[1].witness = vec![
         // semi-realistic p2wpkh spend
         hex_decode("3045022100bdc115b86e9c863279132b4808459cf9b266c8f6a9c14a3dfd956986b807e3320220265833b85197679687c5d5eed1b2637489b34249d44cf5d2d40bc7b514181a5101"),
         hex_decode("02077741a668889ce15d59365886375aea47a7691941d7a0d301697edbc773b45b"),
     ].into();
+    tx
+}
+
+#[test]
+fn legacy_three_inputs_one_segwit() {
+    let tx = legacy_three_inputs_one_segwit_tx();
     let input_values = vec![022_680_000, 006_558_175, 006_558_200];
     let candidates = tx
         .input
         .iter()
         .zip(input_values)
-        .enumerate()
-        .map(|(i, (txin, value))| {
-            let is_segwit = i == 1;
-            Candidate {
-                value,
-                weight: if is_segwit {
-                    txin.segwit_weight()
-                } else {
-                    txin.legacy_weight()
-                }
-                .to_wu(),
-                input_count: 1,
-                is_segwit,
-            }
+        .map(|(txin, value)| Candidate {
+            value,
+            weight: txin.segwit_weight().to_wu(),
+            input_count: 1,
         })
         .collect::<Vec<_>>();
 
@@ -230,5 +229,70 @@ fn new_tr_keyspend_correct_weight() {
     assert_eq!(
         tx.input[0].segwit_weight().to_wu(),
         Candidate::new_tr_keyspend(420).weight
+    );
+}
+
+#[test]
+fn new_with_miniscript_max_weight_to_satisfy_covers_real_inputs() {
+    // miniscript assumes every ECDSA signature is 72 bytes (with the sighash byte).
+    let tx = legacy_three_inputs_one_segwit_tx();
+
+    // P2WPKH (input 1): its signature is 72 bytes, so the estimate is exact.
+    let pubkey = bitcoin::PublicKey::from_slice(tx.input[1].witness.last().unwrap()).unwrap();
+    let descriptor = Descriptor::new_wpkh(pubkey).unwrap();
+    let p2wpkh = Candidate::new(0, descriptor.max_weight_to_satisfy().unwrap().to_wu());
+    assert_eq!(p2wpkh.weight, tx.input[1].segwit_weight().to_wu());
+
+    // P2SH 2-of-3 multisig (inputs 0 and 2): each has one 71-byte signature, so each estimate is one
+    // scriptSig byte (4 WU) over. The redeem script is the last push in the scriptSig.
+    let p2sh = |txin: &TxIn| {
+        let redeem_script = txin.script_sig.instructions().last().unwrap().unwrap();
+        let redeem_script = Script::from_bytes(redeem_script.push_bytes().unwrap().as_bytes());
+        let descriptor = Descriptor::new_sh(Miniscript::parse(redeem_script).unwrap()).unwrap();
+        Candidate::new(0, descriptor.max_weight_to_satisfy().unwrap().to_wu())
+    };
+    let p2sh_a = p2sh(&tx.input[0]);
+    let p2sh_b = p2sh(&tx.input[2]);
+    assert_eq!(p2sh_a.weight, tx.input[0].segwit_weight().to_wu() + 4);
+    assert_eq!(p2sh_b.weight, tx.input[2].segwit_weight().to_wu() + 4);
+
+    // Grouped candidates: a group's weight and input count are the sums over its inputs. However the
+    // inputs are grouped, spending all of them prices the tx at its real weight plus the two
+    // multisig overestimates.
+    let target = Target {
+        outputs: TargetOutputs {
+            value_sum: 0,
+            weight_sum: tx.output.iter().map(|output| output.weight().to_wu()).sum(),
+            n_outputs: tx.output.len(),
+        },
+        fee: TargetFee::ZERO,
+        max_weight: None,
+    };
+    let weight_spending_all = |candidates: &[Candidate]| {
+        let mut coin_selector = CoinSelector::new(candidates, target);
+        coin_selector.select_all();
+        coin_selector.weight(DrainWeights::NONE)
+    };
+
+    // A legacy and a segwit input in one candidate.
+    let legacy_and_segwit = Candidate {
+        value: 0,
+        weight: p2sh_a.weight + p2wpkh.weight,
+        input_count: 2,
+    };
+    assert_eq!(
+        weight_spending_all(&[legacy_and_segwit, p2sh_b]),
+        tx.weight().to_wu() + 4 + 4
+    );
+
+    // Two legacy inputs in one candidate.
+    let two_legacy = Candidate {
+        value: 0,
+        weight: p2sh_a.weight + p2sh_b.weight,
+        input_count: 2,
+    };
+    assert_eq!(
+        weight_spending_all(&[two_legacy, p2wpkh]),
+        tx.weight().to_wu() + 4 + 4
     );
 }

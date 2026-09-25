@@ -24,6 +24,7 @@ std = []
 rand = "0.9"
 proptest = "1.7"
 bitcoin = "0.32"
+miniscript = "12"
 criterion = "0.5"
 
 [[bench]]
