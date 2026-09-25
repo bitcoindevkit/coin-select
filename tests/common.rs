@@ -264,13 +264,13 @@ pub fn gen_candidates(n: usize) -> Vec<Candidate> {
         let value = rng.random_range(1..500_001);
         let weight = rng.random_range(1..2001);
         let input_count = rng.random_range(1..3);
-        let is_segwit = rng.random_bool(0.01);
+        // This used to draw `is_segwit`. Keep drawing so the rng stream stays the same.
+        let _ = rng.random_bool(0.01);
 
         Candidate {
             value,
             weight,
             input_count,
-            is_segwit,
         }
     })
     .take(n)

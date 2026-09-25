@@ -11,16 +11,13 @@ use proptest::{prelude::*, proptest, test_runner::*};
 fn test_wv(mut rng: impl RngCore) -> impl Iterator<Item = Candidate> {
     core::iter::repeat_with(move || {
         let value = rng.random_range(0..1_000);
-        let mut candidate = Candidate {
+        let candidate = Candidate {
             value,
             weight: 100,
             input_count: rng.random_range(1..2),
-            is_segwit: rng.random_bool(0.5),
         };
-        // HACK: set is_segwit = true for all these tests because you can't actually lower bound
-        // things easily with how segwit inputs interfere with their weights. We can't modify the
-        // above since that would change what we pull from rng.
-        candidate.is_segwit = true;
+        // This used to draw `is_segwit`. Keep drawing so the rng stream stays the same.
+        let _ = rng.random_bool(0.5);
         candidate
     })
 }
@@ -62,10 +59,7 @@ fn bnb_finds_an_exact_solution_in_n_iter() {
     let num_additional_canidates = 12;
 
     let mut rng = TestRng::deterministic_rng(RngAlgorithm::ChaCha);
-    let mut wv = test_wv(&mut rng).map(|mut candidate| {
-        candidate.is_segwit = true;
-        candidate
-    });
+    let mut wv = test_wv(&mut rng);
 
     let solution: Vec<Candidate> = (0..solution_len).map(|_| wv.next().unwrap()).collect();
     let target_value = solution.iter().map(|c| c.value).sum();

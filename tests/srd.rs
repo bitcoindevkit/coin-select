@@ -73,19 +73,16 @@ fn srd_insufficient_funds() {
             value: 50_000,
             weight: 100,
             input_count: 1,
-            is_segwit: true,
         },
         Candidate {
             value: 50_000,
             weight: 100,
             input_count: 1,
-            is_segwit: true,
         },
         Candidate {
             value: 50_000,
             weight: 100,
             input_count: 1,
-            is_segwit: true,
         },
     ];
     let target = target(200_000, 5.0);
@@ -115,7 +112,6 @@ fn srd_max_weight_exceeded() {
             value: 100_000,
             weight: 1000,
             input_count: 1,
-            is_segwit: true,
         };
         10
     ];

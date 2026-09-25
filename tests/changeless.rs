@@ -15,7 +15,6 @@ fn test_wv(mut rng: impl RngCore) -> impl Iterator<Item = Candidate> {
             value,
             weight: rng.random_range(0..100),
             input_count: rng.random_range(1..2),
-            is_segwit: false,
         }
     })
 }

@@ -34,7 +34,6 @@ fn make_candidates(n: usize) -> Vec<Candidate> {
                 value,
                 weight: TXIN_BASE_WEIGHT + P2WPKH_SAT_W,
                 input_count: 1,
-                is_segwit: true,
             }
         })
         .collect()

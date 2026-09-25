@@ -36,12 +36,11 @@ let candidates = vec![
         input_count: 1,
         // the value of the input
         value: 1_000_000,
-        // the total weight of the input(s) including their witness/scriptSig
-        // you may need to use miniscript to figure out the correct value here.
+        // the total weight of the input(s) as serialized in a segwit tx, i.e.
+        // `TxIn::segwit_weight`. Legacy inputs include their 1 WU empty witness.
+        // `Candidate::new(value, descriptor.max_weight_to_satisfy()?.to_wu())`
+        // computes this for you.
         weight: TR_KEYSPEND_TXIN_WEIGHT,
-        // wether it's a segwit input. Needed so we know whether to include the
-        // segwit header in total weight calculations.
-        is_segwit: true
     },
     Candidate {
         // A candidate can represent multiple inputs in the case where you 
@@ -49,7 +48,6 @@ let candidates = vec![
         input_count: 2,
         weight: 2*TR_KEYSPEND_TXIN_WEIGHT,
         value: 3_000_000,
-        is_segwit: true
     }
 ];
 
@@ -108,19 +106,16 @@ let candidates = [
         input_count: 1,
         value: 400_000,
         weight: TR_KEYSPEND_TXIN_WEIGHT,
-        is_segwit: true
     },
     Candidate {
         input_count: 1,
         value: 200_000,
         weight: TR_KEYSPEND_TXIN_WEIGHT,
-        is_segwit: true
     },
     Candidate {
         input_count: 1,
         value: 11_000,
         weight: TR_KEYSPEND_TXIN_WEIGHT,
-        is_segwit: true
     }
 ];
 let drain_weights = bdk_coin_select::DrainWeights::default();
