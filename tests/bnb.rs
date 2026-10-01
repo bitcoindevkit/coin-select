@@ -1,6 +1,7 @@
 mod common;
 use bdk_coin_select::{
-    float::Ordf32, BnbMetric, Candidate, CoinSelector, Drain, Target, TargetFee, TargetOutputs,
+    float::Ordf32, BnbMetric, Candidate, CoinSelector, Drain, SelectionProblem, Target, TargetFee,
+    TargetOutputs,
 };
 #[macro_use]
 extern crate alloc;
@@ -11,16 +12,13 @@ use proptest::{prelude::*, proptest, test_runner::*};
 fn test_wv(mut rng: impl RngCore) -> impl Iterator<Item = Candidate> {
     core::iter::repeat_with(move || {
         let value = rng.random_range(0..1_000);
-        let mut candidate = Candidate {
+        let candidate = Candidate {
             value,
             weight: 100,
             input_count: rng.random_range(1..2),
-            is_segwit: rng.random_bool(0.5),
         };
-        // HACK: set is_segwit = true for all these tests because you can't actually lower bound
-        // things easily with how segwit inputs interfere with their weights. We can't modify the
-        // above since that would change what we pull from rng.
-        candidate.is_segwit = true;
+        // This used to draw `is_segwit`. Keep drawing so the rng stream stays the same.
+        let _ = rng.random_bool(0.5);
         candidate
     })
 }
@@ -62,10 +60,7 @@ fn bnb_finds_an_exact_solution_in_n_iter() {
     let num_additional_canidates = 12;
 
     let mut rng = TestRng::deterministic_rng(RngAlgorithm::ChaCha);
-    let mut wv = test_wv(&mut rng).map(|mut candidate| {
-        candidate.is_segwit = true;
-        candidate
-    });
+    let mut wv = test_wv(&mut rng);
 
     let solution: Vec<Candidate> = (0..solution_len).map(|_| wv.next().unwrap()).collect();
     let target_value = solution.iter().map(|c| c.value).sum();
@@ -85,13 +80,17 @@ fn bnb_finds_an_exact_solution_in_n_iter() {
         max_weight: None,
     };
 
+    let problem = SelectionProblem::new_no_ancestors(target, solution.iter().copied());
+
     let solution_weight = {
-        let mut cs = CoinSelector::new(&solution, target);
+        let mut cs = CoinSelector::new(&problem);
         cs.select_all();
         cs.input_weight()
     };
 
-    let cs = CoinSelector::new(&candidates, target);
+    let problem = SelectionProblem::new_no_ancestors(target, candidates.iter().copied());
+
+    let cs = CoinSelector::new(&problem);
     let solutions = cs.bnb_solutions(MinExcessThenWeight);
 
     let mut rounds = 0;
@@ -102,7 +101,7 @@ fn bnb_finds_an_exact_solution_in_n_iter() {
         .last()
         .expect("it found a solution");
 
-    assert_eq!(rounds, 3194);
+    assert_eq!(rounds, 62453);
     assert_eq!(best.input_weight(), solution_weight);
     assert_eq!(best.selected_value(), target_value, "score={:?}", score);
 }
@@ -125,7 +124,9 @@ fn bnb_finds_solution_if_possible_in_n_iter() {
         max_weight: None,
     };
 
-    let cs = CoinSelector::new(&candidates, target);
+    let problem = SelectionProblem::new_no_ancestors(target, candidates.iter().copied());
+
+    let cs = CoinSelector::new(&problem);
     let solutions = cs.bnb_solutions(MinExcessThenWeight);
 
     let mut rounds = 0;
@@ -136,7 +137,7 @@ fn bnb_finds_solution_if_possible_in_n_iter() {
         .last()
         .expect("found a solution");
 
-    assert_eq!(rounds, 164);
+    assert_eq!(rounds, 95);
     let excess = sol.excess(Drain::NONE);
     assert_eq!(excess, 0);
 }
@@ -154,7 +155,8 @@ proptest! {
             fee: TargetFee::ZERO,
             max_weight: None,
         };
-        let cs = CoinSelector::new(&candidates, target);
+        let problem = SelectionProblem::new_no_ancestors(target, candidates.iter().copied());
+        let cs = CoinSelector::new(&problem);
         let solutions = cs.bnb_solutions(MinExcessThenWeight);
 
         match solutions.enumerate().filter_map(|(i, sol)| Some((i, sol?))).last() {
@@ -186,13 +188,17 @@ proptest! {
             max_weight: None,
         };
 
+        let problem = SelectionProblem::new_no_ancestors(target, solution.iter().copied());
+
         let solution_weight = {
-            let mut cs = CoinSelector::new(&solution, target);
+            let mut cs = CoinSelector::new(&problem);
             cs.select_all();
             cs.input_weight()
         };
 
-        let mut cs = CoinSelector::new(&candidates, target);
+        let problem = SelectionProblem::new_no_ancestors(target, candidates.iter().copied());
+
+        let mut cs = CoinSelector::new(&problem);
         for i in 0..num_preselected.min(solution_len) {
             cs.select(i);
         }

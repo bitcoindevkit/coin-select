@@ -9,7 +9,7 @@
 
 ```rust
 use std::str::FromStr;
-use bdk_coin_select::{ CoinSelector, Candidate, TR_KEYSPEND_TXIN_WEIGHT, Drain, FeeRate, Target, ChangePolicy, TargetOutputs, TargetFee, DrainWeights};
+use bdk_coin_select::{ CoinSelector, Candidate, SelectionProblem, TR_KEYSPEND_TXIN_WEIGHT, Drain, FeeRate, Target, ChangePolicy, TargetOutputs, TargetFee, DrainWeights};
 use bitcoin::{ Amount, Address, Network, Transaction, TxIn, TxOut };
 
 let recipient_addr: Address = "tb1pvjf9t34fznr53u5tqhejz4nr69luzkhlvsdsdfq9pglutrpve2xq7hps46"
@@ -36,12 +36,11 @@ let candidates = vec![
         input_count: 1,
         // the value of the input
         value: 1_000_000,
-        // the total weight of the input(s) including their witness/scriptSig
-        // you may need to use miniscript to figure out the correct value here.
+        // the total weight of the input(s) as serialized in a segwit tx, i.e.
+        // `TxIn::segwit_weight`. Legacy inputs include their 1 WU empty witness.
+        // `Candidate::new(value, descriptor.max_weight_to_satisfy()?.to_wu())`
+        // computes this for you.
         weight: TR_KEYSPEND_TXIN_WEIGHT,
-        // wether it's a segwit input. Needed so we know whether to include the
-        // segwit header in total weight calculations.
-        is_segwit: true
     },
     Candidate {
         // A candidate can represent multiple inputs in the case where you 
@@ -49,12 +48,12 @@ let candidates = vec![
         input_count: 2,
         weight: 2*TR_KEYSPEND_TXIN_WEIGHT,
         value: 3_000_000,
-        is_segwit: true
     }
 ];
 
 // You can now select coins!
-let mut coin_selector = CoinSelector::new(&candidates, target);
+let problem = SelectionProblem::new_no_ancestors(target, candidates.iter().copied());
+let mut coin_selector = CoinSelector::new(&problem);
 coin_selector.select(0);
 
 assert!(!coin_selector.is_funded(), "we didn't select enough");
@@ -89,7 +88,7 @@ metric by implementing the [`BnbMetric`] yourself but we don't recommend this.
 
 ```rust
 use std::str::FromStr;
-use bdk_coin_select::{ BnbMetric, Candidate, CoinSelector, FeeRate, Target, TargetFee, TargetOutputs, TR_KEYSPEND_TXIN_WEIGHT};
+use bdk_coin_select::{ BnbMetric, Candidate, CoinSelector, FeeRate, SelectionProblem, Target, TargetFee, TargetOutputs, TR_KEYSPEND_TXIN_WEIGHT};
 use bdk_coin_select::metrics::LowestFee;
 use bitcoin::{ Address, Amount, Network, Transaction, TxIn, TxOut };
 
@@ -108,19 +107,16 @@ let candidates = [
         input_count: 1,
         value: 400_000,
         weight: TR_KEYSPEND_TXIN_WEIGHT,
-        is_segwit: true
     },
     Candidate {
         input_count: 1,
         value: 200_000,
         weight: TR_KEYSPEND_TXIN_WEIGHT,
-        is_segwit: true
     },
     Candidate {
         input_count: 1,
         value: 11_000,
         weight: TR_KEYSPEND_TXIN_WEIGHT,
-        is_segwit: true
     }
 ];
 let drain_weights = bdk_coin_select::DrainWeights::default();
@@ -133,7 +129,9 @@ let target = Target {
     max_weight: None,
 };
 
-let mut coin_selector = CoinSelector::new(&candidates, target);
+let problem = SelectionProblem::new_no_ancestors(target, candidates.iter().copied());
+
+let mut coin_selector = CoinSelector::new(&problem);
 
 // The feerate used to work out whether a change output would be dust (and so shouldn't be added).
 // The standard dust relay feerate is 3 sat/vb.
@@ -174,6 +172,52 @@ println!("We are including a change output of {} value (0 means not change)", ch
 
 
 ```
+
+## Unconfirmed ancestors
+
+Use `SelectionProblem::new` when spending unconfirmed UTXOs. Supply every unconfirmed transaction
+that created an input and all of its transitive unconfirmed ancestors; missing transaction ids are
+treated as confirmed and can make the required CPFP fee too low. Parent lists contain direct parents
+only. Ancestors shared by several selected inputs are charged once over their union.
+
+```rust
+use bdk_coin_select::{
+    AncestorToBump, FeeRate, Input, SelectionProblem, Target, TargetFee, TargetOutputs,
+};
+
+let target = Target {
+    fee: TargetFee::from_feerate(FeeRate::from_sat_per_vb(5.0)),
+    outputs: TargetOutputs::fund_outputs([(136, 50_000)]),
+    max_weight: None,
+};
+let inputs = [Input {
+    value: 100_000,
+    weight: 272,
+    residing_txid: "child",
+}];
+let ancestors = [
+    AncestorToBump {
+        txid: "parent",
+        weight: 400,
+        fee: 100,
+        parents: vec![],
+    },
+    AncestorToBump {
+        txid: "child",
+        weight: 600,
+        fee: 200,
+        parents: vec!["parent"],
+    },
+];
+let problem = SelectionProblem::new(target, inputs, ancestors);
+let mut coin_selector = problem.selector();
+coin_selector.select(0);
+// 1000 wu of ancestors at 1.25 sat/wu owe 1250 sats, of which they already pay 300.
+assert_eq!(coin_selector.ancestor_bump(), 950);
+```
+
+Adding an input may drag in more fee debt than value, so funding is not necessarily monotone for
+ancestor-aware problems. `run_bnb` accounts for this and de-duplicates shared ancestors.
 
 # Minimum Supported Rust Version (MSRV)
 
