@@ -389,11 +389,13 @@ impl<'a> CoinSelector<'a> {
         self.sort_candidates_by(|a, b| key_fn(a).cmp(&key_fn(b)))
     }
 
-    /// Sorts the candidates by descending value per weight unit, tie-breaking with value.
+    /// Sorts the candidates by descending value per weight unit, tie-breaking with [`Candidate`]'s
+    /// `Ord`.
+    ///
+    /// Tie-breaking on the whole candidate keeps identical candidates next to each other, which
+    /// branch and bound relies on to exclude them together.
     pub fn sort_candidates_by_descending_value_pwu(&mut self) {
-        self.sort_candidates_by_key(|(_, wv)| {
-            core::cmp::Reverse((Ordf32(wv.value_pwu()), wv.value))
-        });
+        self.sort_candidates_by_key(|(_, wv)| core::cmp::Reverse((Ordf32(wv.value_pwu()), wv)));
     }
 
     /// Shuffle the candidates with Fisher-Yates algorithm.
@@ -903,7 +905,10 @@ impl std::error::Error for NoBnbSolution {}
 /// A `Candidate` represents an input candidate for [`CoinSelector`].
 ///
 /// This can either be a single UTXO, or a group of UTXOs that should be spent together.
-#[derive(Debug, Clone, Copy)]
+///
+/// The derived `Ord` compares fields in declaration order and has no meaning beyond grouping
+/// identical candidates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Candidate {
     /// Total value of the UTXO(s) that this [`Candidate`] represents.
     pub value: u64,
