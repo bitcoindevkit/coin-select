@@ -183,29 +183,15 @@ impl<'a> CoinSelector<'a> {
         self.selected.is_empty()
     }
 
-    /// The weight of the inputs including the witness header and the varint for the number of
-    /// inputs.
+    /// The weight of the inputs including the varint for the number of inputs.
+    ///
+    /// Inputs are priced as segwit, so each legacy input is overestimated by its 1 WU empty
+    /// witness when no segwit input is selected (see [`Candidate::weight`]).
     pub fn input_weight(&self) -> u64 {
-        let is_segwit_tx = self.selected().any(|(_, wv)| wv.is_segwit);
-        let witness_header_extra_weight = is_segwit_tx as u64 * 2;
-
         let input_count = self.selected().map(|(_, wv)| wv.input_count).sum::<usize>();
         let input_varint_weight = varint_size(input_count) * 4;
-
-        let selected_weight: u64 = self
-            .selected()
-            .map(|(_, candidate)| {
-                let mut weight = candidate.weight;
-                if is_segwit_tx && !candidate.is_segwit {
-                    // non-segwit candidates do not have the witness length field included in their
-                    // weight field so we need to add 1 here if it's in a segwit tx.
-                    weight += 1;
-                }
-                weight
-            })
-            .sum();
-
-        input_varint_weight + selected_weight + witness_header_extra_weight
+        let selected_weight: u64 = self.selected().map(|(_, wv)| wv.weight).sum();
+        input_varint_weight + selected_weight
     }
 
     /// Absolute value sum of all selected inputs.
@@ -403,11 +389,13 @@ impl<'a> CoinSelector<'a> {
         self.sort_candidates_by(|a, b| key_fn(a).cmp(&key_fn(b)))
     }
 
-    /// Sorts the candidates by descending value per weight unit, tie-breaking with value.
+    /// Sorts the candidates by descending value per weight unit, tie-breaking with [`Candidate`]'s
+    /// `Ord`.
+    ///
+    /// Tie-breaking on the whole candidate keeps identical candidates next to each other, which
+    /// branch and bound relies on to exclude them together.
     pub fn sort_candidates_by_descending_value_pwu(&mut self) {
-        self.sort_candidates_by_key(|(_, wv)| {
-            core::cmp::Reverse((Ordf32(wv.value_pwu()), wv.value))
-        });
+        self.sort_candidates_by_key(|(_, wv)| core::cmp::Reverse((Ordf32(wv.value_pwu()), wv)));
     }
 
     /// Shuffle the candidates with Fisher-Yates algorithm.
@@ -917,38 +905,44 @@ impl std::error::Error for NoBnbSolution {}
 /// A `Candidate` represents an input candidate for [`CoinSelector`].
 ///
 /// This can either be a single UTXO, or a group of UTXOs that should be spent together.
-#[derive(Debug, Clone, Copy)]
+///
+/// The derived `Ord` compares fields in declaration order and has no meaning beyond grouping
+/// identical candidates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Candidate {
     /// Total value of the UTXO(s) that this [`Candidate`] represents.
     pub value: u64,
-    /// Total weight of including this/these UTXO(s).
-    /// `txin` fields: `prevout`, `nSequence`, `scriptSigLen`, `scriptSig`, `scriptWitnessLen`,
-    /// `scriptWitness` should all be included.
+    /// Total weight of the input(s) as serialized in a segwit transaction, i.e. the sum of
+    /// `TxIn::segwit_weight` from rust-bitcoin. That is `prevout`, `scriptSig` and its length,
+    /// `nSequence`, and `scriptWitness` with its stack item count. A legacy input's empty
+    /// `scriptWitness` still serializes its stack item count (1 WU) in a segwit transaction.
+    ///
+    /// [`CoinSelector`] always prices the transaction as segwit. A transaction that spends only
+    /// legacy inputs has no witness section, so its weight is overestimated by 2 WU plus 1 WU per
+    /// input. This never undershoots the target feerate, but such a selection within that margin of
+    /// [`Target::max_weight`] is rejected even though the real transaction would fit.
     pub weight: u64,
     /// Total number of inputs; so we can calculate extra `varint` weight due to `vin` len changes.
     pub input_count: usize,
-    /// Whether this [`Candidate`] contains at least one segwit spend.
-    pub is_segwit: bool,
 }
 
 impl Candidate {
     /// Create a [`Candidate`] input that spends a single taproot keyspend output.
     pub fn new_tr_keyspend(value: u64) -> Self {
-        let weight = TR_KEYSPEND_SATISFACTION_WEIGHT;
-        Self::new(value, weight, true)
+        Self::new(value, TR_KEYSPEND_SATISFACTION_WEIGHT)
     }
 
-    /// Create a new [`Candidate`] that represents a single input.
+    /// Create a new [`Candidate`] that represents a single input of any script type.
     ///
-    /// `satisfaction_weight` is the weight of `scriptSigLen + scriptSig + scriptWitnessLen +
-    /// scriptWitness`.
-    pub fn new(value: u64, satisfaction_weight: u64, is_segwit: bool) -> Candidate {
-        let weight = TXIN_BASE_WEIGHT + satisfaction_weight;
+    /// `satisfaction_weight` is the weight the input adds over an unsatisfied `TxIn::default()`,
+    /// which is exactly what miniscript's `Descriptor::max_weight_to_satisfy()?.to_wu()` returns.
+    /// It excludes the 1-byte `scriptSig` length and the 1-byte `scriptWitness` stack item count,
+    /// which [`TXIN_BASE_WEIGHT`] covers.
+    pub fn new(value: u64, satisfaction_weight: u64) -> Candidate {
         Candidate {
             value,
-            weight,
+            weight: TXIN_BASE_WEIGHT + satisfaction_weight,
             input_count: 1,
-            is_segwit,
         }
     }
 

@@ -137,12 +137,14 @@ impl<'a, M: BnbMetric> BnbIter<'a, M> {
         inclusion_cs.select(next_index);
         self.consider_adding_to_queue(&inclusion_cs, false);
 
-        // for the exclusion branch, we keep banning if candidates have the same weight and value
+        // for the exclusion branch, we keep banning identical candidates since selecting any one of
+        // them is equivalent to selecting another. This relies on the sort placing identical
+        // candidates next to each other.
         let mut is_first_ban = true;
         let mut exclusion_cs = cs.clone();
-        let to_ban = (next.value, next.weight);
+        let to_ban = next;
         for (next_index, next) in cs.unselected() {
-            if (next.value, next.weight) != to_ban {
+            if next != to_ban {
                 break;
             }
             let (_index, _candidate) = exclusion_cs

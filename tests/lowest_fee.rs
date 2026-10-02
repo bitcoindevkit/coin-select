@@ -4,7 +4,8 @@ mod common;
 use bdk_coin_select::metrics::{Changeless, LowestFee};
 use bdk_coin_select::{
     BnbMetric, Candidate, ChangePolicy, CoinSelector, Drain, DrainWeights, FeeRate, NoBnbSolution,
-    Replace, Target, TargetFee, TargetOutputs, TX_FIXED_FIELD_WEIGHT,
+    Replace, Target, TargetFee, TargetOutputs, TXIN_BASE_WEIGHT, TXOUT_BASE_WEIGHT,
+    TX_FIXED_FIELD_WEIGHT,
 };
 use proptest::prelude::*;
 
@@ -84,9 +85,8 @@ proptest! {
         let candidates = vec![
             Candidate {
                 value: 20_000,
-                weight: (32 + 4 + 4 + 1) * 4 + 64 + 32,
+                weight: TXIN_BASE_WEIGHT + 64 + 32,
                 input_count: 1,
-                is_segwit: true,
             };
             params.n_candidates
         ];
@@ -237,20 +237,17 @@ fn does_not_create_change_below_spend_cost() {
             value: 100_000,
             weight: 100,
             input_count: 1,
-            is_segwit: true,
         },
         Candidate {
             value: 50_000,
             weight: 100,
             input_count: 1,
-            is_segwit: true,
         },
         // NOTE: this input has negative effective value
         Candidate {
             value: 10,
             weight: 100,
             input_count: 1,
-            is_segwit: true,
         },
     ];
 
@@ -315,13 +312,11 @@ fn zero_fee_tx() {
             value: 100_000,
             weight: 100,
             input_count: 1,
-            is_segwit: true,
         },
         Candidate {
             value: 50_000,
             weight: 100,
             input_count: 1,
-            is_segwit: true,
         },
     ];
 
@@ -347,7 +342,6 @@ fn err_candidate(value: u64) -> Candidate {
         value,
         weight: 272, // ~1 P2WPKH input
         input_count: 1,
-        is_segwit: true,
     }
 }
 
@@ -425,4 +419,34 @@ fn run_bnb_reports_round_limit() {
             rounds: 0,
         },
     );
+}
+
+/// Branch and bound excludes identical candidates together, which relies on the sort placing them
+/// next to each other. Candidates that differ only in `input_count` are not identical, so the sort
+/// must not interleave them with each other, or nothing gets excluded together and the search blows
+/// up: without the tie-break this takes 35,749 rounds.
+#[test]
+fn identical_candidates_are_excluded_together_when_interleaved() {
+    // Equal value and weight, alternating input count.
+    let candidates = (0..16)
+        .map(|i| Candidate {
+            value: 10_000,
+            weight: 400,
+            input_count: 1 + i % 2,
+        })
+        .collect::<Vec<_>>();
+    let target = Target {
+        outputs: TargetOutputs::fund_outputs([(TXOUT_BASE_WEIGHT + 22 * 4, 78_000)]),
+        fee: TargetFee::from_feerate(FeeRate::from_sat_per_vb(10.0)),
+        max_weight: None,
+    };
+    let metric = LowestFee {
+        long_term_feerate: FeeRate::from_sat_per_vb(10.0),
+        dust_relay_feerate: FeeRate::from_sat_per_vb(1.0),
+        drain_weights: DrainWeights::TR_KEYSPEND,
+    };
+    let rounds = CoinSelector::new(&candidates, target)
+        .bnb_solutions(metric)
+        .count();
+    assert!(rounds <= 100, "took {} rounds", rounds);
 }
