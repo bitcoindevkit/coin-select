@@ -1,4 +1,12 @@
-use crate::{float::Ordf32, BnbMetric, CoinSelector, Drain, DrainWeights, FeeRate};
+use crate::{
+    float::{Ordf32, Ordf64},
+    BnbMetric, Candidate, CoinSelector, Drain, DrainWeights, FeeRate,
+};
+
+/// [`Candidate::effective_value`] in `f64`, so it stays exact for large values.
+fn effective_value_f64(candidate: Candidate, feerate: FeeRate) -> f64 {
+    candidate.value as f64 - candidate.weight as f64 * feerate.spwu() as f64
+}
 
 /// Metric that aims to minimize transaction fees. The future fee for spending the change output is
 /// included in this calculation.
@@ -199,17 +207,17 @@ impl BnbMetric for LowestFee {
             //
             // In the perfect scenario, no additional fee would be required to pay for rounding up when converting from weight units to
             // vbytes and so all fee calculations below are performed on weight units directly.
-            let rate_excess = cs.rate_excess_wu(Drain::NONE) as f32;
-            let mut scale = Ordf32(0.0);
+            let rate_excess = cs.rate_excess_wu(Drain::NONE) as f64;
+            let mut scale = Ordf64(0.0);
 
             if rate_excess < 0.0 {
                 let remaining_value_to_reach_feerate = rate_excess.abs();
                 let effective_value_of_resized_input =
-                    to_resize.effective_value(cs.target().fee.rate);
+                    effective_value_f64(to_resize, cs.target().fee.rate);
                 if effective_value_of_resized_input > 0.0 {
                     let feerate_scale =
                         remaining_value_to_reach_feerate / effective_value_of_resized_input;
-                    scale = scale.max(Ordf32(feerate_scale));
+                    scale = scale.max(Ordf64(feerate_scale));
                 } else {
                     return None; // we can never satisfy the constraint
                 }
@@ -218,15 +226,15 @@ impl BnbMetric for LowestFee {
             // We can use the same approach for replacement we just have to use the
             // incremental_relay_feerate.
             if let Some(replace) = cs.target().fee.replace {
-                let replace_excess = cs.replacement_excess_wu(Drain::NONE) as f32;
+                let replace_excess = cs.replacement_excess_wu(Drain::NONE) as f64;
                 if replace_excess < 0.0 {
                     let remaining_value_to_reach_feerate = replace_excess.abs();
                     let effective_value_of_resized_input =
-                        to_resize.effective_value(replace.incremental_relay_feerate);
+                        effective_value_f64(to_resize, replace.incremental_relay_feerate);
                     if effective_value_of_resized_input > 0.0 {
                         let replace_scale =
                             remaining_value_to_reach_feerate / effective_value_of_resized_input;
-                        scale = scale.max(Ordf32(replace_scale));
+                        scale = scale.max(Ordf64(replace_scale));
                     } else {
                         return None; // we can never satisfy the constraint
                     }
@@ -235,12 +243,12 @@ impl BnbMetric for LowestFee {
             // Handle absolute fee constraint. Unlike feerate and replacement, the
             // absolute fee is a fixed amount (not weight-proportional), so we just
             // need enough raw value to cover the gap.
-            let absolute_excess = cs.absolute_excess(Drain::NONE) as f32;
+            let absolute_excess = cs.absolute_excess(Drain::NONE) as f64;
             if absolute_excess < 0.0 {
                 let remaining = absolute_excess.abs();
                 if to_resize.value > 0 {
-                    let absolute_scale = remaining / to_resize.value as f32;
-                    scale = scale.max(Ordf32(absolute_scale));
+                    let absolute_scale = remaining / to_resize.value as f64;
+                    scale = scale.max(Ordf64(absolute_scale));
                 } else {
                     return None; // we can never satisfy the constraint
                 }
@@ -253,8 +261,8 @@ impl BnbMetric for LowestFee {
             // fractional relaxation, so it never prunes a branch with an (integer) within-cap
             // solution.
             if let Some(max_weight) = cs.target().max_weight {
-                if cs.weight(DrainWeights::NONE) as f32 + scale.0 * to_resize.weight as f32
-                    > max_weight as f32
+                if cs.weight(DrainWeights::NONE) as f64 + scale.0 * to_resize.weight as f64
+                    > max_weight as f64
                 {
                     return None;
                 }
@@ -262,11 +270,15 @@ impl BnbMetric for LowestFee {
 
             // `scale` could be 0 even if `is_funded` is `false` due to the latter being based on
             // rounded-up vbytes.
-            let ideal_fee = scale.0 * to_resize.value as f32 + cs.selected_value() as f32
-                - cs.target().value() as f32;
+            //
+            // The arithmetic is done in `f64` (subtracting the integers first) so that it stays
+            // exact at large values. Casting to `f32` at the end keeps the bound admissible: the
+            // cast is monotonic, and `fee_score` casts the true fee the same way.
+            let ideal_fee = scale.0 * to_resize.value as f64
+                + (cs.selected_value() as i64 - cs.target().value() as i64) as f64;
             assert!(ideal_fee >= 0.0);
 
-            Some(Ordf32(ideal_fee))
+            Some(Ordf32(ideal_fee as f32))
         }
     }
 
