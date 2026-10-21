@@ -450,3 +450,28 @@ fn identical_candidates_are_excluded_together_when_interleaved() {
         .count();
     assert!(rounds <= 100, "took {} rounds", rounds);
 }
+
+#[test]
+fn bound_does_not_panic_on_f32_rounding() {
+    // At a zero feerate, the bound's ideal fee for an empty selection is
+    // `(target / value) * value - target`. In f32, `(1 / 41) * 41` rounds to `1 - 2^-24`, so this
+    // came out slightly negative and tripped the old `assert!` (#57).
+    let candidates = [Candidate::new_tr_keyspend(41)];
+    let target = Target {
+        fee: TargetFee::ZERO,
+        outputs: TargetOutputs {
+            value_sum: 1,
+            weight_sum: 0,
+            n_outputs: 1,
+        },
+        max_weight: None,
+    };
+    let mut metric = LowestFee {
+        long_term_feerate: FeeRate::ZERO,
+        dust_relay_feerate: FeeRate::ZERO,
+        drain_weights: DrainWeights::TR_KEYSPEND,
+    };
+    let cs = CoinSelector::new(&candidates, target);
+    let bound = metric.bound(&cs).expect("target is reachable");
+    assert_eq!(bound.0, 0.0);
+}
