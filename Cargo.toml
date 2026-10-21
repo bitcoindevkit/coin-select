@@ -22,7 +22,8 @@ std = []
 
 [dev-dependencies]
 rand = "0.9"
-proptest = "1.7"
+# proptest 1.12 moved to rand 0.10; bump both together.
+proptest = ">=1.7, <1.12"
 bitcoin = "0.32"
 miniscript = "12"
 criterion = "0.5"
