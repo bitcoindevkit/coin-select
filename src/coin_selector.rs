@@ -1,7 +1,7 @@
 use super::*;
 #[allow(unused)] // some bug in <= 1.48.0 sees this as unused when it isn't
 use crate::float::FloatExt;
-use crate::{bitset::Bitset, bnb::BnbMetric, float::Ordf32, ChangePolicy, FeeRate, Target};
+use crate::{bitset::Bitset, bnb::BnbMetric, float::Ordf64, ChangePolicy, FeeRate, Target};
 use alloc::{sync::Arc, vec::Vec};
 
 /// The minimum change amount Bitcoin Core's `SelectCoinsSRD` targets; a sensible default for the
@@ -299,7 +299,7 @@ impl<'a> CoinSelector<'a> {
         if numerator < 0 || denom == 0 {
             return None;
         }
-        Some(FeeRate::from_sat_per_wu(numerator as f32 / denom as f32))
+        Some(FeeRate::from_sat_per_wu(numerator as f64 / denom as f64))
     }
 
     /// The fee the current selection and `drain_weight` should pay to satisfy the
@@ -346,12 +346,12 @@ impl<'a> CoinSelector<'a> {
     /// The value of the current selected inputs minus the fee needed to pay for the selected inputs
     pub fn effective_value(&self) -> i64 {
         self.selected_value() as i64
-            - (self.input_weight() as f32 * self.target.fee.rate.spwu()).ceil() as i64
+            - (self.input_weight() as f64 * self.target.fee.rate.spwu()).ceil() as i64
     }
 
     // /// Waste sum of all selected inputs.
-    fn input_waste(&self, long_term_feerate: FeeRate) -> f32 {
-        self.input_weight() as f32 * (self.target.fee.rate.spwu() - long_term_feerate.spwu())
+    fn input_waste(&self, long_term_feerate: FeeRate) -> f64 {
+        self.input_weight() as f64 * (self.target.fee.rate.spwu() - long_term_feerate.spwu())
     }
 
     /// Sorts the candidates by the comparision function.
@@ -395,7 +395,7 @@ impl<'a> CoinSelector<'a> {
     /// Tie-breaking on the whole candidate keeps identical candidates next to each other, which
     /// branch and bound relies on to exclude them together.
     pub fn sort_candidates_by_descending_value_pwu(&mut self) {
-        self.sort_candidates_by_key(|(_, wv)| core::cmp::Reverse((Ordf32(wv.value_pwu()), wv)));
+        self.sort_candidates_by_key(|(_, wv)| core::cmp::Reverse((Ordf64(wv.value_pwu()), wv)));
     }
 
     /// Shuffle the candidates with Fisher-Yates algorithm.
@@ -414,14 +414,14 @@ impl<'a> CoinSelector<'a> {
     /// You can pass in an `excess_discount` which must be between `0.0..1.0`. Passing in `1.0` gives you no discount
     ///
     /// [waste metric]: https://bitcoin.stackexchange.com/questions/113622/what-does-waste-metric-mean-in-the-context-of-coin-selection
-    pub fn waste(&self, long_term_feerate: FeeRate, drain: Drain, excess_discount: f32) -> f32 {
+    pub fn waste(&self, long_term_feerate: FeeRate, drain: Drain, excess_discount: f64) -> f64 {
         debug_assert!((0.0..=1.0).contains(&excess_discount));
         let mut waste = self.input_waste(long_term_feerate);
 
         if drain.is_none() {
             // We don't allow negative excess waste since negative excess just means you haven't
             // satisified target yet in which case you probably shouldn't be calling this function.
-            let mut excess_waste = self.excess(drain).max(0) as f32;
+            let mut excess_waste = self.excess(drain).max(0) as f64;
             // we allow caller to discount this waste depending on how wasteful excess actually is
             // to them.
             excess_waste *= excess_discount.clamp(0.0, 1.0);
@@ -706,7 +706,7 @@ impl<'a> CoinSelector<'a> {
     pub fn bnb_solutions<M: BnbMetric>(
         &self,
         metric: M,
-    ) -> impl Iterator<Item = Option<(CoinSelector<'a>, Ordf32)>> {
+    ) -> impl Iterator<Item = Option<(CoinSelector<'a>, Ordf64)>> {
         crate::bnb::BnbIter::new(self.clone(), metric)
     }
 
@@ -721,7 +721,7 @@ impl<'a> CoinSelector<'a> {
         &mut self,
         metric: M,
         max_rounds: usize,
-    ) -> Result<(Ordf32, Drain), NoBnbSolution> {
+    ) -> Result<(Ordf64, Drain), NoBnbSolution> {
         let mut iter = crate::bnb::BnbIter::new(self.clone(), metric);
         let mut rounds = 0_usize;
         let best = iter
@@ -947,32 +947,32 @@ impl Candidate {
     }
 
     /// Effective value of this input candidate: `actual_value - input_weight * feerate (sats/wu)`.
-    pub fn effective_value(&self, feerate: FeeRate) -> f32 {
-        self.value as f32 - (self.weight as f32 * feerate.spwu())
+    pub fn effective_value(&self, feerate: FeeRate) -> f64 {
+        self.value as f64 - (self.weight as f64 * feerate.spwu())
     }
 
     /// Value per weight unit
-    pub fn value_pwu(&self) -> f32 {
-        self.value as f32 / self.weight as f32
+    pub fn value_pwu(&self) -> f64 {
+        self.value as f64 / self.weight as f64
     }
 
     /// The amount of *effective value* you receive per weight unit from adding this candidate as an
     /// input.
-    pub fn effective_value_pwu(&self, feerate: FeeRate) -> f32 {
+    pub fn effective_value_pwu(&self, feerate: FeeRate) -> f64 {
         self.value_pwu() - feerate.spwu()
     }
 
     /// The (minimum) fee you'd have to pay to add this input to a transaction as implied by the
     /// `feerate`.
-    pub fn implied_fee(&self, feerate: FeeRate) -> f32 {
-        self.weight as f32 * feerate.spwu()
+    pub fn implied_fee(&self, feerate: FeeRate) -> f64 {
+        self.weight as f64 * feerate.spwu()
     }
 
     /// The amount of fee you have to pay per satoshi of value you add from this input.
     ///
     /// The value is always positive but values below 1.0 mean the input has negative [*effective
     /// value*](Self::effective_value) at this `feerate`.
-    pub fn fee_per_value(&self, feerate: FeeRate) -> f32 {
-        self.implied_fee(feerate) / self.value as f32
+    pub fn fee_per_value(&self, feerate: FeeRate) -> f64 {
+        self.implied_fee(feerate) / self.value as f64
     }
 }

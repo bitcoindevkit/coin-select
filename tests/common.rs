@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use bdk_coin_select::{
-    float::Ordf32, metrics::LowestFee, BnbMetric, Candidate, CoinSelector, Drain, DrainWeights,
+    float::Ordf64, metrics::LowestFee, BnbMetric, Candidate, CoinSelector, Drain, DrainWeights,
     FeeRate, NoBnbSolution, Replace, Target, TargetFee, TargetOutputs,
 };
 use proptest::{
@@ -203,8 +203,8 @@ pub struct StrategyParams {
     pub n_target_outputs: usize,
     pub target_weight: u32,
     pub replace: Option<Replace>,
-    pub feerate: f32,
-    pub feerate_lt_diff: f32,
+    pub feerate: f64,
+    pub feerate_lt_diff: f64,
     pub drain_weight: u32,
     pub drain_spend_weight: u32,
     pub drain_dust: u64,
@@ -285,7 +285,7 @@ pub fn print_candidates(params: &StrategyParams, cs: &CoinSelector<'_>) {
             i,
             candidate.effective_value(params.feerate()),
             candidate.value_pwu(),
-            candidate.weight as f32 * (params.feerate().spwu() - params.long_term_feerate().spwu()),
+            candidate.weight as f64 * (params.feerate().spwu() - params.long_term_feerate().spwu()),
             candidate,
         );
     }
@@ -334,7 +334,7 @@ impl<'a> Iterator for ExhaustiveIter<'a> {
     }
 }
 
-pub fn exhaustive_search<M>(cs: &mut CoinSelector, metric: &mut M) -> Option<(Ordf32, usize)>
+pub fn exhaustive_search<M>(cs: &mut CoinSelector, metric: &mut M) -> Option<(Ordf64, usize)>
 where
     M: BnbMetric,
 {
@@ -342,7 +342,7 @@ where
         cs.sort_candidates_by_descending_value_pwu();
     }
 
-    let mut best = Option::<(CoinSelector, Ordf32)>::None;
+    let mut best = Option::<(CoinSelector, Ordf64)>::None;
     let mut rounds = 0;
 
     let iter = ExhaustiveIter::new(cs)?
@@ -391,7 +391,7 @@ pub fn bnb_search<M>(
     cs: &mut CoinSelector,
     metric: M,
     max_rounds: usize,
-) -> Result<(Ordf32, usize), NoBnbSolution>
+) -> Result<(Ordf64, usize), NoBnbSolution>
 where
     M: BnbMetric,
 {
@@ -409,7 +409,7 @@ where
     Ok((score, rounds))
 }
 
-pub fn result_string<E>(res: &Result<(Ordf32, usize), E>, change: Drain) -> String
+pub fn result_string<E>(res: &Result<(Ordf64, usize), E>, change: Drain) -> String
 where
     E: std::fmt::Debug,
 {
@@ -449,7 +449,7 @@ pub fn compare_against_benchmarks<M: BnbMetric + Clone>(
                 {
                     let mut naive_select = cs.clone();
                     naive_select.sort_candidates_by_key(|(_, wv)| {
-                        core::cmp::Reverse(Ordf32(wv.effective_value(target.fee.rate)))
+                        core::cmp::Reverse(Ordf64(wv.effective_value(target.fee.rate)))
                     });
                     // we filter out failing onces below
                     let _ = naive_select.select_until_target_met();
@@ -530,7 +530,7 @@ fn randomly_satisfy_target<'a, R: rand::Rng>(
 ) -> CoinSelector<'a> {
     let mut cs = cs.clone();
 
-    let mut last_score: Option<Ordf32> = None;
+    let mut last_score: Option<Ordf64> = None;
     while let Some(next) = cs.unselected_indices().choose(rng) {
         cs.select(next);
         if cs.is_funded() {

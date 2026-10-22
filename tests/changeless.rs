@@ -1,7 +1,7 @@
 #![allow(unused)]
 mod common;
 use bdk_coin_select::{
-    float::Ordf32,
+    float::Ordf64,
     metrics::{Changeless, LowestFee},
     Candidate, CoinSelector, DrainWeights, FeeRate, Target, TargetFee, TargetOutputs,
 };
@@ -32,8 +32,8 @@ proptest! {
         n_target_outputs in 1..150_usize,    // the number of outputs we're funding
         target_weight in 0..10_000_u32,         // the sum of the weight of the outputs (wu)
         replace in common::maybe_replace(0..10_000u64), // The weight of the transaction we're replacing
-        feerate in 1.0..100.0_f32,          // feerate (sats/vb)
-        feerate_lt_diff in -5.0..50.0_f32,  // longterm feerate diff (sats/vb)
+        feerate in 1.0..100.0_f64,          // feerate (sats/vb)
+        feerate_lt_diff in -5.0..50.0_f64,  // longterm feerate diff (sats/vb)
         drain_weight in 100..=500_u32,      // drain weight (wu)
         drain_spend_weight in 1..=2000_u32, // drain spend weight (wu)
         drain_dust in 100..=1000_u64,       // drain dust (sats)

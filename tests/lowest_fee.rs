@@ -22,8 +22,8 @@ proptest! {
         n_target_outputs in 1usize..150,    // the number of outputs we're funding
         target_weight in 0..10_000_u32,         // the sum of the weight of the outputs (wu)
         replace in common::maybe_replace(0u64..10_000), // The weight of the transaction we're replacing
-        feerate in 1.0..100.0_f32,          // feerate (sats/vb)
-        feerate_lt_diff in -5.0..50.0_f32,  // longterm feerate diff (sats/vb)
+        feerate in 1.0..100.0_f64,          // feerate (sats/vb)
+        feerate_lt_diff in -5.0..50.0_f64,  // longterm feerate diff (sats/vb)
         drain_weight in 100..=500_u32,      // drain weight (wu)
         drain_spend_weight in 1..=2000_u32, // drain spend weight (wu)
         drain_dust in 100..=1000_u64,       // drain dust (sats)
@@ -44,8 +44,8 @@ proptest! {
         n_target_outputs in 1usize..150,    // the number of outputs we're funding
         target_weight in 0..10_000_u32,         // the sum of the weight of the outputs (wu)
         replace in common::maybe_replace(0u64..10_000), // The weight of the transaction we're replacing
-        feerate in 1.0..100.0_f32,          // feerate (sats/vb)
-        feerate_lt_diff in -5.0..50.0_f32,  // longterm feerate diff (sats/vb)
+        feerate in 1.0..100.0_f64,          // feerate (sats/vb)
+        feerate_lt_diff in -5.0..50.0_f64,  // longterm feerate diff (sats/vb)
         drain_weight in 100..=500_u32,      // drain weight (wu)
         drain_spend_weight in 1..=2000_u32, // drain spend weight (wu)
         drain_dust in 100..=1000_u64,       // drain dust (sats)
@@ -66,8 +66,8 @@ proptest! {
         n_target_outputs in 1usize..150,    // the number of outputs we're funding
         target_weight in 0..10_000_u32,         // the sum of the weight of the outputs (wu)
         replace in common::maybe_replace(0u64..10_000), // The weight of the transaction we're replacing
-        feerate in 1.0..100.0_f32,          // feerate (sats/vb)
-        feerate_lt_diff in -5.0..50.0_f32,  // longterm feerate diff (sats/vb)
+        feerate in 1.0..100.0_f64,          // feerate (sats/vb)
+        feerate_lt_diff in -5.0..50.0_f64,  // longterm feerate diff (sats/vb)
         drain_weight in 100..=500_u32,      // drain weight (wu)
         drain_spend_weight in 1..=2000_u32, // drain spend weight (wu)
         drain_dust in 100..=1000_u64,       // drain dust (sats)
@@ -115,8 +115,8 @@ proptest! {
         n_target_outputs in 1usize..150,    // the number of outputs we're funding
         target_weight in 0..10_000_u32,         // the sum of the weight of the outputs (wu)
         replace in common::maybe_replace(0u64..10_000), // The weight of the transaction we're replacing
-        feerate in 1.0..100.0_f32,          // feerate (sats/vb)
-        feerate_lt_diff in -5.0..50.0_f32,  // longterm feerate diff (sats/vb)
+        feerate in 1.0..100.0_f64,          // feerate (sats/vb)
+        feerate_lt_diff in -5.0..50.0_f64,  // longterm feerate diff (sats/vb)
         drain_weight in 100..=500_u32,      // drain weight (wu)
         drain_spend_weight in 1..=2000_u32, // drain spend weight (wu)
         drain_dust in 100..=1000_u64,       // drain dust (sats)
@@ -149,8 +149,8 @@ proptest! {
         n_target_outputs in 1usize..150,
         target_weight in 0..10_000_u32,
         replace in common::maybe_replace(0u64..10_000),
-        feerate in 1.0..100.0_f32,
-        feerate_lt_diff in -5.0..50.0_f32,
+        feerate in 1.0..100.0_f64,
+        feerate_lt_diff in -5.0..50.0_f64,
         drain_weight in 100..=500_u32,
         drain_spend_weight in 1..=2000_u32,
         drain_dust in 100..=1000_u64,
@@ -474,4 +474,72 @@ fn bound_does_not_panic_on_f32_rounding() {
     let cs = CoinSelector::new(&candidates, target);
     let bound = metric.bound(&cs).expect("target is reachable");
     assert_eq!(bound.0, 0.0);
+}
+
+#[test]
+fn bound_is_admissible_at_large_values() {
+    // With `a` selected, the bound is `scale * b + (a - target)`. f32 rounds `a` up to
+    // 100_000_008 and `target` down to 100_000_000, so subtracting after casting gave 8 instead of
+    // 2, and the bound came out at 104, above the fee of selecting both (101), pruning it.
+    let candidates = [
+        Candidate::new_tr_keyspend(100_000_005),
+        Candidate::new_tr_keyspend(99),
+    ];
+    let target = Target {
+        fee: TargetFee {
+            absolute: 100,
+            ..TargetFee::ZERO
+        },
+        outputs: TargetOutputs {
+            value_sum: 100_000_003,
+            weight_sum: 0,
+            n_outputs: 1,
+        },
+        max_weight: None,
+    };
+    let mut metric = LowestFee {
+        long_term_feerate: FeeRate::from_sat_per_vb(10.0),
+        dust_relay_feerate: FeeRate::ZERO,
+        drain_weights: DrainWeights::TR_KEYSPEND,
+    };
+    let mut cs = CoinSelector::new(&candidates, target);
+    cs.select(0);
+    let bound = metric.bound(&cs).expect("target is reachable");
+    cs.select(1);
+    let score = metric.score(&cs).expect("target is met");
+    assert_eq!(score.0, 101.0);
+    assert!(bound <= score, "bound {} > score {}", bound, score);
+}
+
+#[test]
+fn score_tells_apart_fees_above_2_pow_24() {
+    // f32 spaces values 4 apart at 2^25, so fees of 2^25 and 2^25 + 1 used to score the same and
+    // BnB could keep the dearer selection (#82).
+    let fee = 1 << 25;
+    let target = Target {
+        fee: TargetFee {
+            absolute: fee,
+            ..TargetFee::ZERO
+        },
+        outputs: TargetOutputs {
+            value_sum: 1_000,
+            weight_sum: 0,
+            n_outputs: 1,
+        },
+        max_weight: None,
+    };
+    let mut metric = LowestFee {
+        long_term_feerate: FeeRate::ZERO,
+        dust_relay_feerate: FeeRate::from_sat_per_vb(1.0),
+        drain_weights: DrainWeights::TR_KEYSPEND,
+    };
+    let candidates = [
+        Candidate::new_tr_keyspend(1_000 + fee),
+        Candidate::new_tr_keyspend(1_000 + fee + 1),
+    ];
+    let mut cheap = CoinSelector::new(&candidates, target);
+    cheap.select(0);
+    let mut dear = CoinSelector::new(&candidates, target);
+    dear.select(1);
+    assert!(metric.score(&cheap) < metric.score(&dear));
 }

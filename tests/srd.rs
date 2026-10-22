@@ -18,7 +18,7 @@ fn splitmix64(mut state: u64) -> impl FnMut() -> u64 {
     }
 }
 
-fn target(value: u64, feerate: f32) -> Target {
+fn target(value: u64, feerate: f64) -> Target {
     Target {
         fee: TargetFee::from_feerate(FeeRate::from_sat_per_vb(feerate)),
         outputs: TargetOutputs::fund_outputs([(TXOUT_BASE_WEIGHT + TR_SPK_WEIGHT, value)]),
