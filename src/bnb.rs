@@ -1,6 +1,6 @@
 use core::cmp::Reverse;
 
-use crate::{float::Ordf32, Drain};
+use crate::{float::Ordf64, Drain};
 
 use super::CoinSelector;
 use alloc::collections::BinaryHeap;
@@ -10,13 +10,13 @@ use alloc::collections::BinaryHeap;
 #[derive(Debug)]
 pub(crate) struct BnbIter<'a, M: BnbMetric> {
     queue: BinaryHeap<Branch<'a>>,
-    best: Option<Ordf32>,
+    best: Option<Ordf64>,
     /// The `BnBMetric` that will score each selection
     pub(crate) metric: M,
 }
 
 impl<'a, M: BnbMetric> Iterator for BnbIter<'a, M> {
-    type Item = Option<(CoinSelector<'a>, Ordf32)>;
+    type Item = Option<(CoinSelector<'a>, Ordf64)>;
 
     fn next(&mut self) -> Option<Self::Item> {
         // {
@@ -164,7 +164,7 @@ impl<'a, M: BnbMetric> BnbIter<'a, M> {
 
 #[derive(Debug, Clone)]
 struct Branch<'a> {
-    lower_bound: Ordf32,
+    lower_bound: Ordf64,
     selector: CoinSelector<'a>,
     is_exclusion: bool,
 }
@@ -197,7 +197,7 @@ impl PartialEq for Branch<'_> {
 
 impl Eq for Branch<'_> {}
 
-/// A branch and bound metric where we minimize the [`Ordf32`] score.
+/// A branch and bound metric where we minimize the [`Ordf64`] score.
 ///
 /// This is to be used as input for [`CoinSelector::run_bnb`] or [`CoinSelector::bnb_solutions`].
 ///
@@ -212,7 +212,7 @@ pub trait BnbMetric {
     /// Get the score of the selection `cs` against [`cs.target()`](CoinSelector::target).
     ///
     /// If this returns `None`, the selection is invalid.
-    fn score(&mut self, cs: &CoinSelector<'_>) -> Option<Ordf32>;
+    fn score(&mut self, cs: &CoinSelector<'_>) -> Option<Ordf64>;
 
     /// Get the lower bound score, using a heuristic, against
     /// [`cs.target()`](CoinSelector::target).
@@ -222,7 +222,7 @@ pub trait BnbMetric {
     ///
     /// If this returns `None`, the current branch and all descendant branches will not have valid
     /// solutions.
-    fn bound(&mut self, cs: &CoinSelector<'_>) -> Option<Ordf32>;
+    fn bound(&mut self, cs: &CoinSelector<'_>) -> Option<Ordf64>;
 
     /// The change output (a.k.a. drain) this metric decides on for the selection `cs` and
     /// [`cs.target()`](CoinSelector::target), or [`Drain::NONE`] if it decides there should be no

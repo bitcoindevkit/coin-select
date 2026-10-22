@@ -43,17 +43,17 @@ impl DrainWeights {
         feerate: FeeRate,
         long_term_feerate: FeeRate,
         n_target_outputs: usize,
-    ) -> f32 {
+    ) -> f64 {
         let extra_varint_weight =
             (varint_size(n_target_outputs + self.n_outputs) - varint_size(n_target_outputs)) * 4;
         let extra_output_weight = self.output_weight + extra_varint_weight;
-        extra_output_weight as f32 * feerate.spwu()
-            + self.spend_weight as f32 * long_term_feerate.spwu()
+        extra_output_weight as f64 * feerate.spwu()
+            + self.spend_weight as f64 * long_term_feerate.spwu()
     }
 
     /// The fee you will pay to spend these change output(s) in the future.
     pub fn spend_fee(&self, long_term_feerate: FeeRate) -> u64 {
-        (self.spend_weight as f32 * long_term_feerate.spwu()).ceil() as u64
+        (self.spend_weight as f64 * long_term_feerate.spwu()).ceil() as u64
     }
 
     /// The minimum value a change output with these weights must have to not be considered dust
