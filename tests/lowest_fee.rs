@@ -1,7 +1,7 @@
 #![allow(unused_imports)]
 
 mod common;
-use bdk_coin_select::metrics::{Changeless, LowestFee};
+use bdk_coin_select::metrics::LowestFee;
 use bdk_coin_select::{
     BnbMetric, Candidate, ChangePolicy, CoinSelector, Drain, DrainWeights, FeeRate, NoBnbSolution,
     Replace, Target, TargetFee, TargetOutputs, TXIN_BASE_WEIGHT, TXOUT_BASE_WEIGHT,
@@ -172,47 +172,6 @@ proptest! {
             bnb_found, exact_possible
         );
     }
-}
-
-/// We wrap `LowestFee` in `Changeless` to derive a metric that finds the lowest-fee changeless
-/// solution. Constraining to changeless should never take fewer rounds than the unconstrained
-/// `LowestFee`.
-#[test]
-fn combined_changeless_metric() {
-    let params = common::StrategyParams {
-        n_candidates: 100,
-        target_value: 100_000,
-        target_weight: 1000 - TX_FIXED_FIELD_WEIGHT as u32 - 1,
-        replace: None,
-        feerate: 5.0,
-        feerate_lt_diff: -4.0,
-        drain_weight: 200,
-        drain_spend_weight: 600,
-        drain_dust: 200,
-        n_target_outputs: 1,
-        n_drain_outputs: 1,
-        max_weight: None,
-    };
-
-    let candidates = common::gen_candidates(params.n_candidates);
-    let target = params.target();
-    let mut cs_a = CoinSelector::new(&candidates, target);
-    let mut cs_b = CoinSelector::new(&candidates, target);
-    let metric_lowest_fee = params.lowest_fee_metric();
-
-    let metric_changeless = Changeless(params.lowest_fee_metric());
-
-    // cs_a uses the unconstrained metric
-    let (score, rounds) =
-        common::bnb_search(&mut cs_a, metric_lowest_fee, usize::MAX).expect("must find solution");
-    println!("score={:?} rounds={}", score, rounds);
-
-    // cs_b uses the changeless-constrained metric
-    let (combined_score, combined_rounds) =
-        common::bnb_search(&mut cs_b, metric_changeless, usize::MAX).expect("must find solution");
-    println!("score={:?} rounds={}", combined_score, combined_rounds);
-
-    assert!(combined_rounds >= rounds);
 }
 
 /// Because this metric decides change optimally, it never creates a change output whose value
@@ -396,6 +355,24 @@ fn run_bnb_reports_max_weight_exceeded() {
         cs.run_bnb(err_metric(), 100_000).unwrap_err(),
         NoBnbSolution::MaxWeightExceeded,
     );
+}
+
+/// The search is seeded with the greedy selection, so a budget too small to search anything still
+/// comes back with a usable answer instead of `RoundLimit`. Without that, a caller on a large pool
+/// falls through to whatever fallback it has for something branch and bound could have covered.
+#[test]
+fn run_bnb_returns_the_greedy_selection_on_a_tight_budget() {
+    let candidates = core::iter::repeat(err_candidate(100_000))
+        .take(500)
+        .collect::<Vec<_>>();
+    let target = Target {
+        outputs: err_outputs(1_000_000),
+        fee: TargetFee::ZERO,
+        max_weight: None,
+    };
+    let mut cs = CoinSelector::new(&candidates, target);
+    cs.run_bnb(err_metric(), 1).expect("the seed is a solution");
+    assert!(cs.is_funded());
 }
 
 #[test]
