@@ -8,6 +8,7 @@
 - **Breaking:** `BnbMetric` metrics now decide the change output themselves. The trait gains a `drain(&mut self, cs) -> Drain` method; call it on a branch-and-bound solution (or the `LowestFee` metric directly) to get the change output the metric optimized against, instead of computing a separate `ChangePolicy`.
 - **Breaking:** `CoinSelector::run_bnb` now returns `(Ordf64, Drain)` instead of just `Ordf32`, handing back the change output the metric decided on for the winning selection.
 - **Breaking:** `LowestFee` no longer takes a `change_policy`. It now takes `dust_relay_feerate: FeeRate` and `drain_weights: DrainWeights`, and adds change only when doing so lowers the long-term fee and the change would not be dust.
+- Add `CoinSelector::clear_selection`, which deselects every candidate while keeping the bans and the candidate order.
 - Add `DrainWeights::dust_threshold(dust_relay_feerate)`, the minimum value a change output with these weights must have to not be dust.
 - Add `CoinSelector::select_srd`, a Single Random Draw selector (port of Bitcoin Core's `SelectCoinsSRD`) that adds candidates in random order until the change reaches `change_lower`, producing a healthy-sized (privacy-friendly) change output instead of minimizing fees. Adds the `CHANGE_LOWER` constant for Core's value.
 - **Breaking:** `Changeless` is now `Changeless<M>`, wrapping an inner metric it constrains to changeless solutions (e.g. `Changeless<LowestFee>`), replacing the previous tuple-composition approach.

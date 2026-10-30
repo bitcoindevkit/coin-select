@@ -67,6 +67,10 @@ impl Bitset {
         was_set
     }
 
+    pub(crate) fn clear(&mut self) {
+        self.words.fill(0);
+    }
+
     /// Iterate over set bits in ascending index order.
     pub fn iter(&self) -> BitsetIter<'_> {
         BitsetIter {

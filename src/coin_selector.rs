@@ -109,6 +109,11 @@ impl<'a> CoinSelector<'a> {
         self.selected.remove(index)
     }
 
+    /// Deselect every candidate. Bans and the candidate order are kept.
+    pub fn clear_selection(&mut self) {
+        self.selected.clear();
+    }
+
     /// Convienince method to pick elements of a slice by the indexes that are currently selected.
     /// Obviously the slice must represent the inputs ordered in the same way as when they were
     /// passed to `Candidates::new`.
