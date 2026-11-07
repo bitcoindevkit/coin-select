@@ -77,8 +77,3 @@ const fn varint_size(v: usize) -> u64 {
     }
     9
 }
-
-#[allow(unused)]
-fn txout_weight_from_spk_len(spk_len: usize) -> u64 {
-    (TXOUT_BASE_WEIGHT + varint_size(spk_len) + (spk_len as u64)) * 4
-}
